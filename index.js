@@ -1,3 +1,5 @@
+// @ts-nocheck
+
 function getSillyTavernContext() {
     if (window.parent && window.parent.SillyTavern) {
         return window.parent.SillyTavern.getContext();
@@ -133,6 +135,10 @@ function createTransferUI() {
                     <label class="auto-switch-label">
                         <input type="checkbox" id="auto-close-modal" checked>
                         <span>完成后自动关闭</span>
+                    </label>
+                    <label class="auto-switch-label">
+                        <input type="checkbox" id="auto-enable-entry" checked>
+                        <span>插入后自动开启</span>
                     </label>
                 </div>
                 <div id="entries-container" style="display: none;">
@@ -490,7 +496,7 @@ function displayTransferableEntries(entries) {
                             <span style="font-size: ${isMobile ? '15px' : '14px'};">${entry.statusIcon}</span>
                             <span style="color: ${statusColor}; font-weight: 500; padding: 3px 8px; background: ${statusColor}20; border-radius: 6px; font-size: ${isSmallScreen ? '11px' : '12px'};">${entry.statusText}</span>
                         </div>
-                        ${entry.role || entry.injection_position ? `<div class="meta-info" style="display: inline-flex; ${isMobile ? 'flex-direction: column; gap: 2px;' : 'gap: 12px;'} margin-left: ${isMobile ? '0' : '8px'}; font-size: ${isSmallScreen ? '11px' : '12px'}; opacity: 0.8;">${entry.role ? `<span>👤 ${entry.role}</span>` : ''}${entry.injection_position ? `<span>📍 ${entry.injection_position}</span>` : ''}</div>` : ''}
+                        ${(entry.role || entry.injection_position != null) ? `<div class="meta-info" style="display: inline-flex; ${isMobile ? 'flex-direction: column; gap: 2px;' : 'gap: 12px;'} margin-left: ${isMobile ? '0' : '8px'}; font-size: ${isSmallScreen ? '11px' : '12px'}; opacity: 0.8;">${entry.role ? `<span>👤 ${entry.role}</span>` : ''}<span>📍 ${entry.injection_position ?? 'relative'}</span></div>` : ''}
                     </div>
                 </div>
             </div>`;
@@ -635,6 +641,7 @@ async function executeTransfer(apiInfo) {
     const targetPreset = $('#target-preset').val();
     const selectedEntries = getSelectedEntries();
     const insertPosition = $('#insert-position').val();
+    const autoEnable = $('#auto-enable-entry').prop('checked');
     if (selectedEntries.length === 0) { alert('请至少选择一个条目'); return; }
 
     const isInsertMode = !sourcePreset && targetPreset;
@@ -653,7 +660,7 @@ async function executeTransfer(apiInfo) {
 
         try {
             $('#execute-transfer').prop('disabled', true).text('插入中...');
-            await performInsertNewEntry(apiInfo, targetPreset, newEntry, insertPosition);
+            await performInsertNewEntry(apiInfo, targetPreset, newEntry, insertPosition, autoEnable);
             let successMessage = `成功插入新条目 "${newEntry.name}"！`;
             if ($('#auto-switch-preset').prop('checked')) {
                 try {
@@ -686,7 +693,7 @@ async function executeTransfer(apiInfo) {
 
         try {
             $('#execute-transfer').prop('disabled', true).text('转移中...');
-            await performTransfer(apiInfo, sourcePreset, targetPreset, selectedEntries, insertPosition);
+            await performTransfer(apiInfo, sourcePreset, targetPreset, selectedEntries, insertPosition, autoEnable);
             let successMessage = `成功转移 ${selectedEntries.length} 个条目！`;
             if ($('#auto-switch-preset').prop('checked')) {
                 try {
@@ -752,7 +759,7 @@ async function switchToPreset(apiInfo, presetName) {
     }
 }
 
-async function performInsertNewEntry(apiInfo, targetPreset, newEntry, insertPosition) {
+async function performInsertNewEntry(apiInfo, targetPreset, newEntry, insertPosition, autoEnable) {
     const targetData = getPresetDataFromManager(apiInfo, targetPreset);
     if (!targetData) throw new Error('无法获取目标预设数据');
 
@@ -767,13 +774,13 @@ async function performInsertNewEntry(apiInfo, targetPreset, newEntry, insertPosi
         content: newEntry.content || '',
         system_prompt: false,
         marker: false,
-        injection_depth: newEntry.injection_depth || 4,
-        injection_position: newEntry.injection_position || 'relative',
-        forbid_overrides: newEntry.forbid_overrides || false
+        injection_depth: newEntry.injection_depth ?? 4,
+        injection_position: newEntry.injection_position ?? 'relative',
+        forbid_overrides: newEntry.forbid_overrides ?? false
     };
 
     targetData.prompts.push(newPrompt);
-    const newOrderEntry = { identifier: newIdentifier, enabled: true };
+    const newOrderEntry = { identifier: newIdentifier, enabled: autoEnable };
 
     if (insertPosition === 'top') {
         characterPromptOrder.order.unshift(newOrderEntry);
@@ -799,7 +806,7 @@ async function performInsertNewEntry(apiInfo, targetPreset, newEntry, insertPosi
     console.log(`新条目 "${newEntry.name}" 已成功插入到预设 "${targetPreset}"`);
 }
 
-async function performTransfer(apiInfo, sourcePreset, targetPreset, selectedEntries, insertPosition) {
+async function performTransfer(apiInfo, sourcePreset, targetPreset, selectedEntries, insertPosition, autoEnable) {
     const sourceData = getPresetDataFromManager(apiInfo, sourcePreset);
     const targetData = getPresetDataFromManager(apiInfo, targetPreset);
     if (!sourceData || !targetData) throw new Error('无法获取预设数据');
@@ -812,15 +819,18 @@ async function performTransfer(apiInfo, sourcePreset, targetPreset, selectedEntr
         if (targetPromptMap.has(entry.name)) {
             const existingIndex = targetPromptMap.get(entry.name);
             const existingPrompt = targetData.prompts[existingIndex];
-            targetData.prompts[existingIndex] = { ...existingPrompt, name: entry.name, role: entry.role || 'system', content: entry.content || '', injection_depth: entry.injection_depth || 4, injection_position: entry.injection_position || 'relative', forbid_overrides: entry.forbid_overrides || false };
+            targetData.prompts[existingIndex] = { ...existingPrompt, name: entry.name, role: entry.role ?? 'system', content: entry.content ?? '', injection_depth: entry.injection_depth ?? 4, injection_position: entry.injection_position ?? 'relative', forbid_overrides: entry.forbid_overrides ?? false };
             const existingOrderEntry = characterPromptOrder.order.find(o => o.identifier === existingPrompt.identifier);
-            if (existingOrderEntry) existingOrderEntry.enabled = true;
-            else characterPromptOrder.order.push({ identifier: existingPrompt.identifier, enabled: true });
+            if (existingOrderEntry) {
+                existingOrderEntry.enabled = autoEnable;
+            } else {
+                characterPromptOrder.order.push({ identifier: existingPrompt.identifier, enabled: autoEnable });
+            }
         } else {
             const newIdentifier = generateUUID();
-            const newPrompt = { identifier: newIdentifier, name: entry.name, role: entry.role || 'system', content: entry.content || '', system_prompt: false, marker: false, injection_depth: entry.injection_depth || 4, injection_position: entry.injection_position || 'relative', forbid_overrides: entry.forbid_overrides || false };
+            const newPrompt = { identifier: newIdentifier, name: entry.name, role: entry.role ?? 'system', content: entry.content ?? '', system_prompt: false, marker: false, injection_depth: entry.injection_depth ?? 4, injection_position: entry.injection_position ?? 'relative', forbid_overrides: entry.forbid_overrides ?? false };
             targetData.prompts.push(newPrompt);
-            const newOrderEntry = { identifier: newIdentifier, enabled: true };
+            const newOrderEntry = { identifier: newIdentifier, enabled: autoEnable };
             if (insertPosition === 'top') characterPromptOrder.order.unshift(newOrderEntry);
             else if (insertPosition.startsWith('after-')) {
                 const afterIndex = parseInt(insertPosition.replace('after-', ''));
