@@ -1,6 +1,6 @@
 // @ts-nocheck
 // Author: discord千秋梦
-// Version: 重制版1.0
+// Version: v1.1
 
 function getSillyTavernContext() {
     if (window.parent && window.parent.SillyTavern) {
@@ -75,28 +75,46 @@ function getPromptEntries(presetData) {
     );
 }
 
-function getOrderedPromptEntries(presetData) {
+function getOrderedPromptEntries(presetData, displayMode = 'default') {
     if (!presetData || !presetData.prompts || !Array.isArray(presetData.prompts)) {
         return [];
     }
 
     const dummyCharacterId = 100001;
     const characterPromptOrder = presetData.prompt_order?.find(order => order.character_id === dummyCharacterId);
+    const orderMap = new Map(characterPromptOrder?.order.map(o => [o.identifier, o.enabled]));
 
+    // Mode 'all': Return all valid prompts from the prompts array, ignoring order.
+    if (displayMode === 'all') {
+        const allEntries = getPromptEntries(presetData);
+        return allEntries.map(entry => ({
+            ...entry,
+            enabled: orderMap.has(entry.identifier) ? orderMap.get(entry.identifier) : false,
+        }));
+    }
+
+    // If no specific order is defined, fall back to returning all prompts.
     if (!characterPromptOrder) {
-        return getPromptEntries(presetData);
+        return getPromptEntries(presetData).map(entry => ({ ...entry, enabled: false }));
     }
 
     const orderedEntries = [];
     const promptMap = new Map(presetData.prompts.map(p => [p.identifier, p]));
 
     characterPromptOrder.order.forEach(orderEntry => {
-        if (orderEntry.enabled && promptMap.has(orderEntry.identifier)) {
+        // For 'default' mode, only process enabled entries.
+        // For 'include_disabled' mode, process all entries in the order.
+        if (displayMode === 'default' && !orderEntry.enabled) {
+            return; // Skip disabled entries in default mode
+        }
+
+        if (promptMap.has(orderEntry.identifier)) {
             const prompt = promptMap.get(orderEntry.identifier);
+            // Filter out system prompts, markers, and empty names.
             if (prompt && !prompt.system_prompt && !prompt.marker && prompt.name && prompt.name.trim() !== '') {
                 orderedEntries.push({
                     ...prompt,
-                    enabled: orderEntry.enabled,
+                    enabled: orderEntry.enabled, // Always include the enabled status
                     orderIndex: orderedEntries.length
                 });
             }
@@ -114,8 +132,319 @@ function getDeviceInfo() {
     return { isMobile, isSmallScreen, isPortrait };
 }
 
+// 新版本字段处理
+const NEW_FIELD_DEFAULTS = {
+    injection_order: 100,
+    injection_trigger: [],
+};
+
+const TRIGGER_TYPES = [
+    'normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet',
+];
+
+const TRIGGER_TYPE_LABELS = {
+    'normal': '正常',
+    'continue': '继续',
+    'impersonate': 'AI 帮答',
+    'swipe': 'Swipe',
+    'regenerate': '重新生成',
+    'quiet': 'Quiet',
+};
+
+function hasNewVersionFields(entry) {
+    return entry.hasOwnProperty('injection_order') || entry.hasOwnProperty('injection_trigger');
+}
+
+function extractNewVersionFields(sourceEntry) {
+    const newFields = {};
+    if (sourceEntry.hasOwnProperty('injection_order')) {
+        newFields.injection_order = sourceEntry.injection_order;
+    }
+    if (sourceEntry.hasOwnProperty('injection_trigger')) {
+        newFields.injection_trigger = Array.isArray(sourceEntry.injection_trigger) ? [...sourceEntry.injection_trigger] : [];
+    }
+    return newFields;
+}
+
+function applyNewVersionFields(targetEntry, newFields) {
+    if (newFields.hasOwnProperty('injection_order')) {
+        targetEntry.injection_order = newFields.injection_order;
+    } else if (!targetEntry.hasOwnProperty('injection_order')) {
+        targetEntry.injection_order = NEW_FIELD_DEFAULTS.injection_order;
+    }
+    if (newFields.hasOwnProperty('injection_trigger')) {
+        targetEntry.injection_trigger = [...newFields.injection_trigger];
+    } else if (!targetEntry.hasOwnProperty('injection_trigger')) {
+        targetEntry.injection_trigger = [...NEW_FIELD_DEFAULTS.injection_trigger];
+    }
+    return targetEntry;
+}
+
+function transferEntryWithNewFields(sourceEntry, targetEntry = null) {
+    if (!targetEntry) {
+        targetEntry = {
+            identifier: sourceEntry.identifier,
+            name: sourceEntry.name,
+            role: sourceEntry.role,
+            content: sourceEntry.content,
+            system_prompt: sourceEntry.system_prompt || false,
+            injection_position: sourceEntry.injection_position,
+            injection_depth: sourceEntry.injection_depth,
+            forbid_overrides: sourceEntry.forbid_overrides || false,
+        };
+    }
+    const newFields = extractNewVersionFields(sourceEntry);
+    return applyNewVersionFields(targetEntry, newFields);
+}
+
+function batchTransferWithNewFields(sourceEntries) {
+    return sourceEntries.map(sourceEntry => transferEntryWithNewFields(sourceEntry));
+}
+
+function createEntryWithNewFields(entryData, options = {}) {
+    const entry = {
+        identifier: entryData.identifier || generateUUID(),
+        name: entryData.name || '',
+        role: entryData.role || 'system',
+        content: entryData.content || '',
+        system_prompt: entryData.system_prompt || false,
+        injection_position: entryData.injection_position,
+        injection_depth: entryData.injection_depth ?? 4,
+        forbid_overrides: entryData.forbid_overrides || false,
+        injection_order: options.order ?? NEW_FIELD_DEFAULTS.injection_order,
+        injection_trigger: options.triggers ? [...options.triggers] : [...NEW_FIELD_DEFAULTS.injection_trigger],
+    };
+    return entry;
+}
+
+function sortEntriesByOrder(entries) {
+    return entries.slice().sort((a, b) => {
+        const orderA = a.injection_order ?? NEW_FIELD_DEFAULTS.injection_order;
+        const orderB = b.injection_order ?? NEW_FIELD_DEFAULTS.injection_order;
+        return orderA - orderB;
+    });
+}
+
+function ensureNewVersionFields(entry) {
+    const updatedEntry = { ...entry };
+    if (!updatedEntry.hasOwnProperty('injection_order')) {
+        updatedEntry.injection_order = NEW_FIELD_DEFAULTS.injection_order;
+    }
+    if (!updatedEntry.hasOwnProperty('injection_trigger')) {
+        updatedEntry.injection_trigger = [...NEW_FIELD_DEFAULTS.injection_trigger];
+    }
+    return updatedEntry;
+}
+
+function ensureAllEntriesHaveNewFields(entries) {
+    return entries.map(entry => ensureNewVersionFields(entry));
+}
+
+// 主题相关功能
+function isDarkTheme() {
+    try {
+        const context = getSillyTavernContext();
+        const theme = context.powerUserSettings?.theme;
+        const blurTint = context.powerUserSettings?.blur_tint_color;
+
+        if (theme !== undefined) {
+            const themeStr = String(theme).toLowerCase();
+            return themeStr.includes('dark') ||
+                   themeStr.includes('midnight') ||
+                   themeStr.includes('black') ||
+                   (blurTint && blurTint.includes('23, 23, 23'));
+        }
+    } catch (error) {
+        console.warn('Could not get SillyTavern context for theme detection.', error);
+    }
+
+    // Fallback to CSS detection
+    try {
+        const $ = getJQuery();
+        const bodyBg = $('body').css('background-color');
+        if (bodyBg) {
+            const rgb = bodyBg.match(/\d+/g);
+            if (rgb && rgb.length >= 3) {
+                const brightness = (parseInt(rgb[0]) * 299 + parseInt(rgb[1]) * 587 + parseInt(rgb[2]) * 114) / 1000;
+                return brightness < 128;
+            }
+        }
+
+        // Additional CSS checks
+        const rootBg = $(':root').css('background-color') || $('html').css('background-color');
+        if (rootBg && rootBg !== 'rgba(0, 0, 0, 0)') {
+            const rgb = rootBg.match(/\d+/g);
+            if (rgb && rgb.length >= 3) {
+                const brightness = (parseInt(rgb[0]) * 299 + parseInt(rgb[1]) * 587 + parseInt(rgb[2]) * 114) / 1000;
+                return brightness < 128;
+            }
+        }
+    } catch (error) {
+        console.warn('Theme detection by CSS failed.', error);
+    }
+
+    console.log('主题检测失败，使用默认浅色主题');
+    return false;
+}
+
+function toggleTransferToolTheme() {
+    try {
+        const context = getSillyTavernContext();
+
+        if (!context || !context.powerUserSettings) {
+            console.warn('无法访问 powerUserSettings，跳过主题切换');
+            return;
+        }
+
+        const isDark = isDarkTheme();
+        const newTheme = isDark ? 'Default' : 'Dark Lite';
+
+        // Use SillyTavern existing API to switch themes
+        context.powerUserSettings.theme = newTheme;
+
+        const parentWindow = getParentWindow();
+        if (parentWindow.applyTheme) {
+            parentWindow.applyTheme(newTheme);
+        } else if (parentWindow.switchTheme) {
+            parentWindow.switchTheme(newTheme);
+        }
+
+        if (parentWindow.saveSettingsDebounced) {
+            parentWindow.saveSettingsDebounced();
+        } else if (parentWindow.saveSettings) {
+            parentWindow.saveSettings();
+        }
+
+        console.log(`主题已切换到: ${newTheme}`);
+    } catch (error) {
+        console.error('主题切换失败:', error);
+        // 不显示alert，只在控制台记录错误
+        console.warn('主题切换失败，请手动在设置中切换主题');
+    }
+}
+
+function updateThemeButton() {
+    const $ = getJQuery();
+    const themeBtn = $('#theme-toggle-btn');
+    if (themeBtn.length) {
+        const isDark = isDarkTheme();
+        themeBtn.html(isDark ? '☀️' : '🌙');
+        themeBtn.attr('title', isDark ? '切换到浅色主题' : '切换到深色主题');
+    }
+}
+
+function updateModalTheme() {
+    const $ = getJQuery();
+    const modal = $('#preset-transfer-modal');
+    if (!modal.length) return;
+
+    const { isMobile, isSmallScreen, isPortrait } = getDeviceInfo();
+
+    // --- Handle open sub-modals ---
+    const compareModal = $('#compare-modal');
+    let compareModalData = null;
+    if (compareModal.length) {
+        compareModalData = compareModal.data();
+        compareModal.remove();
+    }
+
+    const editModal = $('#edit-entry-modal');
+    let editModalData = null;
+    if (editModal.length) {
+        editModalData = editModal.data();
+        editModal.remove();
+    }
+    // --- End handle sub-modals ---
+
+    // 移除旧的样式
+    $('#preset-transfer-styles').remove();
+    $('#edit-entry-modal-styles').remove();
+    $('#compare-modal-styles').remove();
+
+    // 重新应用主模态框样式
+    applyStyles(isMobile, isSmallScreen, isPortrait);
+
+    // --- Recreate sub-modals if they were open ---
+    if (editModalData && editModalData.apiInfo) {
+        createEditEntryModal(editModalData.apiInfo, editModalData.presetName, editModalData.entry, editModalData.insertPosition, editModalData.autoEnable, editModalData.side, null, editModalData.displayMode);
+    }
+
+    if (compareModalData && compareModalData.apiInfo) {
+        createCompareModal(compareModalData.apiInfo, compareModalData.leftPreset, compareModalData.rightPreset, compareModalData.commonEntries);
+    }
+    // --- End recreate sub-modals ---
+
+    // 更新主题按钮
+    updateThemeButton();
+
+    // 如果条目已加载，则重新加载它们以应用主题
+    if ($('#entries-container').is(':visible')) {
+        const apiInfo = getCurrentApiInfo();
+        if (apiInfo) {
+            loadAndDisplayEntries(apiInfo);
+        }
+    }
+}
+
+function initializeThemeSettings() {
+    try {
+        const context = getSillyTavernContext();
+
+        // 如果是首次使用或者主题未设置，确保使用浅色主题
+        if (!context.powerUserSettings?.theme || context.powerUserSettings.theme === '') {
+            console.log('首次使用预设转移工具，设置默认浅色主题');
+            context.powerUserSettings.theme = 'Default';
+
+            const parentWindow = getParentWindow();
+            if (parentWindow.applyTheme) {
+                parentWindow.applyTheme('Default');
+            }
+            if (parentWindow.saveSettingsDebounced) {
+                parentWindow.saveSettingsDebounced();
+            }
+        }
+    } catch (error) {
+        console.log('主题初始化跳过:', error.message);
+    }
+}
+
+// 设置存储功能
+const STORAGE_KEY = 'preset-transfer-settings';
+
+function getDefaultSettings() {
+    return {
+        autoCloseModal: true,
+        autoEnableEntry: true,
+        leftDisplayMode: 'default',
+        rightDisplayMode: 'default',
+        singleDisplayMode: 'default',
+    };
+}
+
+function saveTransferSettings(settings) {
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    } catch (error) {
+        console.warn('保存设置失败:', error);
+    }
+}
+
+function loadTransferSettings() {
+    try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        return saved ? { ...getDefaultSettings(), ...JSON.parse(saved) } : getDefaultSettings();
+    } catch (error) {
+        console.warn('加载设置失败，使用默认设置:', error);
+        return getDefaultSettings();
+    }
+}
+
 function createTransferUI() {
     console.log('开始创建转移UI...');
+
+    // 初始化主题设置
+    initializeThemeSettings();
+
     const apiInfo = getCurrentApiInfo();
     if (!apiInfo) {
         console.error('无法获取API信息');
@@ -135,9 +464,13 @@ function createTransferUI() {
         <div id="preset-transfer-modal">
             <div class="transfer-modal-content">
                 <div class="modal-header">
+                    <button id="theme-toggle-btn" class="theme-toggle-btn" title="切换主题">🌙</button>
                     <div>
                         <span>🔄</span>
                         <h2>预设条目转移工具</h2>
+                    </div>
+                    <div class="version-info">
+                        <span class="author">V1.1 by discord千秋梦</span>
                     </div>
                 </div>
                 <div class="preset-selection">
@@ -179,6 +512,9 @@ function createTransferUI() {
                         <p>💡 提示：左右两侧显示不同预设的条目，可以互相转移、编辑、删除和新建</p>
                         <div class="search-section">
                             <input type="text" id="entry-search" placeholder="🔍 搜索条目...">
+                            <div class="left-search-section" style="display: none;">
+                                <input type="text" id="left-entry-search" placeholder="🔍 搜索左侧条目...">
+                            </div>
                         </div>
 
                     </div>
@@ -188,16 +524,25 @@ function createTransferUI() {
                                 <h5 id="single-preset-title">预设管理</h5>
                                 <div class="side-controls">
                                     <div class="control-row">
-                                        <button id="single-select-all" class="selection-btn">✅ 全选</button>
-                                        <button id="single-select-none" class="selection-btn">❌ 不选</button>
+                                        <button id="single-select-all" class="selection-btn">
+                                            <span class="btn-icon">✓</span> 全选
+                                        </button>
+                                        <button id="single-select-none" class="selection-btn">
+                                            <span class="btn-icon">✗</span> 不选
+                                        </button>
                                     </div>
                                     <div class="control-row">
-                                        <button id="single-new-entry" class="selection-btn">➕ 新建</button>
+                                        <button id="single-new-entry" class="selection-btn">
+                                            <span class="btn-icon">+</span> 新建
+                                        </button>
                                     </div>
-                                    <label class="display-option-label">
-                                        <input type="checkbox" id="single-show-all">
-                                        <span>显示未开启的条目</span>
-                                    </label>
+                                    <div class="display-options">
+                                        <select id="single-display-mode" class="display-mode-select">
+                                            <option value="default">仅显示已启用</option>
+                                            <option value="include_disabled">显示未开启(有序)</option>
+                                            <option value="all">显示全部(无序)</option>
+                                        </select>
+                                    </div>
                                 </div>
                                 <span id="single-selection-count" class="selection-count"></span>
                             </div>
@@ -214,18 +559,30 @@ function createTransferUI() {
                                 <h5 id="left-preset-title">左侧预设</h5>
                                 <div class="side-controls">
                                     <div class="control-row">
-                                        <button id="left-select-all" class="selection-btn">✅ 全选</button>
-                                        <button id="left-select-none" class="selection-btn">❌ 不选</button>
+                                        <button id="left-select-all" class="selection-btn">
+                                            <span class="btn-icon">✓</span> 全选
+                                        </button>
+                                        <button id="left-select-none" class="selection-btn">
+                                            <span class="btn-icon">✗</span> 不选
+                                        </button>
                                     </div>
                                     <div class="control-row">
-                                        <button id="left-new-entry" class="selection-btn">➕ 新建</button>
+                                        <button id="left-new-entry" class="selection-btn">
+                                            <span class="btn-icon">+</span> 新建
+                                        </button>
                                     </div>
-                                    <label class="display-option-label">
-                                        <input type="checkbox" id="left-show-all">
-                                        <span>显示未开启的条目</span>
-                                    </label>
+                                    <div class="display-options">
+                                        <select id="left-display-mode" class="display-mode-select">
+                                            <option value="default">仅显示已启用</option>
+                                            <option value="include_disabled">显示未开启(有序)</option>
+                                            <option value="all">显示全部(无序)</option>
+                                        </select>
+                                    </div>
                                 </div>
                                 <span id="left-selection-count" class="selection-count"></span>
+                            </div>
+                            <div class="left-search-container" style="display: none;">
+                                <input type="text" id="left-entry-search-inline" placeholder="🔍 搜索左侧条目...">
                             </div>
                             <div id="left-entries-list" class="entries-list"></div>
                             <div class="side-actions">
@@ -240,19 +597,33 @@ function createTransferUI() {
                                 <h5 id="right-preset-title">右侧预设</h5>
                                 <div class="side-controls">
                                     <div class="control-row">
-                                        <button id="right-select-all" class="selection-btn">✅ 全选</button>
-                                        <button id="right-select-none" class="selection-btn">❌ 不选</button>
+                                        <button id="right-select-all" class="selection-btn">
+                                            <span class="btn-icon">✓</span> 全选
+                                        </button>
+                                        <button id="right-select-none" class="selection-btn">
+                                            <span class="btn-icon">✗</span> 不选
+                                        </button>
                                     </div>
                                     <div class="control-row">
-                                        <button id="right-new-entry" class="selection-btn">➕ 新建</button>
-                                        <button id="compare-entries" class="selection-btn" disabled>🔍 比较</button>
+                                        <button id="right-new-entry" class="selection-btn">
+                                            <span class="btn-icon">+</span> 新建
+                                        </button>
+                                        <button id="compare-entries" class="selection-btn" disabled>
+                                            <span class="btn-icon">⚖</span> 比较
+                                        </button>
                                     </div>
-                                    <label class="display-option-label">
-                                        <input type="checkbox" id="right-show-all">
-                                        <span>显示未开启的条目</span>
-                                    </label>
+                                    <div class="display-options">
+                                        <select id="right-display-mode" class="display-mode-select">
+                                            <option value="default">仅显示已启用</option>
+                                            <option value="include_disabled">显示未开启(有序)</option>
+                                            <option value="all">显示全部(无序)</option>
+                                        </select>
+                                    </div>
                                 </div>
                                 <span id="right-selection-count" class="selection-count"></span>
+                            </div>
+                            <div class="right-search-container" style="display: none;">
+                                <input type="text" id="right-entry-search-inline" placeholder="🔍 搜索右侧条目...">
                             </div>
                             <div id="right-entries-list" class="entries-list"></div>
                             <div class="side-actions">
@@ -277,6 +648,14 @@ function createTransferUI() {
 }
 
 function applyStyles(isMobile, isSmallScreen, isPortrait) {
+    const isDark = isDarkTheme();
+    const bgColor = isDark ? '#1a1a1a' : '#ffffff';
+    const textColor = isDark ? '#e0e0e0' : '#374151';
+    const borderColor = isDark ? '#374151' : '#e5e7eb';
+    const inputBg = isDark ? '#2d2d2d' : '#ffffff';
+    const inputBorder = isDark ? '#4b5563' : '#d1d5db';
+    const sectionBg = isDark ? '#262626' : '#f9fafb';
+
     const styles = `
         #preset-transfer-modal {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
@@ -284,30 +663,56 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             z-index: 10000; display: flex; align-items: ${isMobile ? 'flex-start' : 'center'};
             justify-content: center; padding: ${isMobile ? '10px' : '20px'};
             ${isMobile ? 'padding-top: 20px;' : ''}
-            overflow-y: auto; -webkit-overflow-scrolling: touch; animation: fadeIn 0.3s ease-out;
+            overflow-y: auto; -webkit-overflow-scrolling: touch; animation: pt-fadeIn 0.3s ease-out;
         }
         #preset-transfer-modal .transfer-modal-content {
-            background: #ffffff; border-radius: ${isMobile ? '16px' : '20px'};
+            background: ${bgColor}; border-radius: ${isMobile ? '16px' : '20px'};
             padding: ${isSmallScreen ? '24px' : isMobile ? '28px' : '32px'};
             max-width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '1000px'};
             width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '90%'};
             min-height: ${isMobile ? 'auto' : '400px'}; max-height: ${isMobile ? '90vh' : '85vh'};
-            overflow-y: auto; color: #374151; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow-y: auto; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
             ${isMobile ? '-webkit-overflow-scrolling: touch;' : ''}
-            animation: slideUp 0.3s ease-out;
+            animation: pt-slideUp 0.3s ease-out;
+            transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
         }
         #preset-transfer-modal .modal-header {
             text-align: center; margin-bottom: ${isMobile ? '24px' : '28px'};
-            padding-bottom: ${isMobile ? '18px' : '22px'}; border-bottom: 1px solid #e5e7eb; position: relative;
+            padding-bottom: ${isMobile ? '18px' : '22px'}; border-bottom: 1px solid ${borderColor}; position: relative;
         }
-        #preset-transfer-modal .modal-header > div {
+        #preset-transfer-modal .theme-toggle-btn {
+            position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+            background: rgba(${isDark ? '255,255,255' : '0,0,0'}, 0.1); border: none;
+            border-radius: 50%; width: ${isMobile ? '40px' : '36px'}; height: ${isMobile ? '40px' : '36px'};
+            font-size: ${isMobile ? '18px' : '16px'}; cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); display: flex; align-items: center; justify-content: center;
+            backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        #preset-transfer-modal .theme-toggle-btn:hover {
+            background: rgba(${isDark ? '255,255,255' : '0,0,0'}, 0.2);
+            transform: translateY(-50%) scale(1.05);
+        }
+        #preset-transfer-modal .theme-toggle-btn:active {
+            transform: translateY(-50%) scale(0.98);
+        }
+        #preset-transfer-modal .modal-header > div:first-of-type {
             display: flex; align-items: center; justify-content: center;
             gap: 12px; padding: ${isMobile ? '8px 0' : '12px 0'};
         }
-        #preset-transfer-modal .modal-header span { font-size: ${isSmallScreen ? '28px' : isMobile ? '32px' : '36px'}; }
+        #preset-transfer-modal .modal-header span:first-child { font-size: ${isSmallScreen ? '28px' : isMobile ? '32px' : '36px'}; }
         #preset-transfer-modal .modal-header h2 {
             margin: 0; font-size: ${isSmallScreen ? '22px' : isMobile ? '24px' : '28px'};
-            font-weight: 700; color: #111827; letter-spacing: -0.5px;
+            font-weight: 700; color: ${isDark ? '#f3f4f6' : '#111827'}; letter-spacing: -0.5px;
+        }
+        #preset-transfer-modal .version-info {
+            margin-top: 8px; text-align: center;
+            color: ${isDark ? '#9ca3af' : '#6b7280'}; opacity: 0.8; display: flex;
+            align-items: center; justify-content: center; gap: 8px;
+        }
+        #preset-transfer-modal .version-info .author {
+            font-weight: 500; color: ${isDark ? '#9ca3af' : '#6b7280'};
+            font-size: ${isSmallScreen ? '10px' : isMobile ? '11px' : '13px'} !important;
         }
         #preset-transfer-modal .preset-selection {
             display: ${isMobile ? 'flex' : 'grid'};
@@ -315,31 +720,36 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             gap: ${isMobile ? '18px' : '22px'}; margin-bottom: ${isMobile ? '24px' : '28px'};
         }
         #preset-transfer-modal .preset-field {
-            padding: ${isMobile ? '20px' : '24px'}; background: #f9fafb;
-            border-radius: 12px; border: 1px solid #e5e7eb; transition: all 0.3s ease;
+            padding: ${isMobile ? '20px' : '24px'}; background: ${sectionBg};
+            border-radius: 12px; border: 1px solid ${borderColor}; transition: all 0.3s ease;
         }
         #preset-transfer-modal .preset-field label {
             display: flex; flex-direction: column; justify-content: flex-start;
             margin-bottom: 14px; font-weight: 600; font-size: ${isMobile ? '16px' : '15px'};
-            color: #374151; min-height: 50px;
+            color: ${textColor}; min-height: 50px;
         }
         #preset-transfer-modal .preset-field label span:first-child { display: flex; align-items: center; gap: 10px; }
         #preset-transfer-modal .preset-field label span:first-child span {
             display: inline-flex; align-items: center; justify-content: center;
-            width: 24px; height: 24px; background: #ffffff; border: 1px solid #e5e7eb;
-            border-radius: 6px; color: #374151; font-size: 12px;
+            width: 24px; height: 24px; background: ${inputBg}; border: 1px solid ${borderColor};
+            border-radius: 6px; color: ${textColor}; font-size: 12px;
         }
         #preset-transfer-modal .preset-field label span:last-child {
-            color: #6b7280; font-weight: 400; font-size: ${isMobile ? '13px' : '12px'}; margin-top: 4px;
+            color: ${isDark ? '#9ca3af' : '#6b7280'}; font-weight: 400; font-size: ${isMobile ? '13px' : '12px'}; margin-top: 4px;
         }
         #preset-transfer-modal select {
             width: 100%; padding: ${isMobile ? '14px 16px' : '12px 14px'};
-            background: #ffffff; color: #374151; border: 1px solid #d1d5db;
+            background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder};
             border-radius: 8px; font-size: ${isMobile ? '15px' : '14px'}; font-weight: 500;
-            appearance: none; background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 5"><path fill="%236b7280" d="M2 0L0 2h4zm0 5L0 3h4z"/></svg>');
+            appearance: none; background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 5"><path fill="${isDark ? '%23e0e0e0' : '%236b7280'}" d="M2 0L0 2h4zm0 5L0 3h4z"/></svg>');
             background-repeat: no-repeat; background-position: right 16px center;
             background-size: 12px; padding-right: 45px; box-sizing: border-box;
             transition: all 0.3s ease; cursor: pointer;
+        }
+        #preset-transfer-modal select:focus {
+            border-color: ${isDark ? '#60a5fa' : '#6b7280'} !important;
+            box-shadow: 0 0 0 3px rgba(${isDark ? '96, 165, 250' : '107, 114, 128'}, 0.1) !important;
+            outline: none !important;
         }
         #preset-transfer-modal .action-section {
             display: flex; flex-wrap: wrap; align-items: center;
@@ -347,50 +757,81 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             ${isMobile ? 'justify-content: center; flex-direction: column;' : 'justify-content: flex-start;'}
         }
         #preset-transfer-modal #load-entries {
-            padding: ${isMobile ? '18px 32px' : '14px 26px'}; background: #374151;
+            padding: ${isMobile ? '18px 32px' : '14px 26px'}; background: ${isDark ? '#4b5563' : '#374151'};
             border: none; color: #ffffff; border-radius: 10px; cursor: pointer;
             font-size: ${isMobile ? '17px' : '15px'}; font-weight: 600;
             ${isMobile ? 'width: 100%; max-width: 300px;' : 'min-width: 150px;'}
             transition: all 0.3s ease; text-transform: uppercase; letter-spacing: 0.5px;
             ${isMobile ? 'margin-bottom: 10px;' : ''}
         }
+        #preset-transfer-modal #load-entries:hover {
+            background: ${isDark ? '#6b7280' : '#4b5563'};
+            transform: translateY(-1px);
+        }
         #preset-transfer-modal .auto-switch-label {
-            display: flex; align-items: center; gap: ${isMobile ? '16px' : '12px'}; color: #374151;
+            display: flex; align-items: center; gap: ${isMobile ? '16px' : '12px'}; color: ${textColor};
             font-size: ${isMobile ? '16px' : '14px'}; font-weight: 500;
-            cursor: pointer; user-select: none; ${isMobile ? 'justify-content: center; padding: 8px 16px; background: #f9fafb; border-radius: 8px; width: 100%; max-width: 300px;' : ''}
+            cursor: pointer; user-select: none; ${isMobile ? `justify-content: flex-start; padding: 12px 16px; background: ${sectionBg}; border-radius: 12px; width: 100%; max-width: 300px; border: 1px solid ${borderColor};` : ''}
         }
         #preset-transfer-modal .auto-switch-label input {
             ${isMobile ? 'transform: scale(1.4);' : 'transform: scale(1.2);'}
-            accent-color: #374151; cursor: pointer;
+            accent-color: ${isDark ? '#60a5fa' : '#374151'}; cursor: pointer;
         }
         #preset-transfer-modal #entries-container { width: 100%; }
         #preset-transfer-modal .entries-header {
             margin-bottom: ${isMobile ? '20px' : '25px'}; padding: ${isMobile ? '18px' : '22px'};
-            background: #f9fafb; border-radius: 12px; border: 1px solid #e5e7eb;
+            background: ${sectionBg}; border-radius: 12px; border: 1px solid ${borderColor};
         }
         #preset-transfer-modal .entries-header h4 {
-            color: #374151; margin: 0 0 16px 0; font-size: ${isMobile ? '18px' : '17px'};
+            color: ${textColor}; margin: 0 0 16px 0; font-size: ${isMobile ? '18px' : '17px'};
             font-weight: 700; letter-spacing: -0.3px;
         }
         #preset-transfer-modal .entries-header p {
             margin: 0 0 14px 0; font-size: ${isMobile ? '14px' : '13px'};
-            color: #6b7280; line-height: 1.5;
+            color: ${isDark ? '#9ca3af' : '#6b7280'}; line-height: 1.5;
         }
         #preset-transfer-modal .search-section { margin-bottom: 16px; }
+        #preset-transfer-modal .left-search-section {
+            margin-bottom: 16px;
+        }
+        #preset-transfer-modal .left-search-container,
+        #preset-transfer-modal .right-search-container {
+            margin-bottom: 12px;
+        }
+        #preset-transfer-modal #left-entry-search,
+        #preset-transfer-modal #left-entry-search-inline,
+        #preset-transfer-modal #right-entry-search-inline {
+            width: 100%; padding: ${isMobile ? '14px 18px' : '12px 16px'};
+            background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder};
+            border-radius: 8px; font-size: ${isMobile ? '15px' : '14px'}; font-weight: 400;
+            transition: all 0.3s ease; box-sizing: border-box;
+        }
+        #preset-transfer-modal #left-entry-search:focus,
+        #preset-transfer-modal #left-entry-search-inline:focus,
+        #preset-transfer-modal #right-entry-search-inline:focus {
+            border-color: ${isDark ? '#60a5fa' : '#6b7280'} !important;
+            box-shadow: 0 0 0 3px rgba(${isDark ? '96, 165, 250' : '107, 114, 128'}, 0.1) !important;
+            outline: none !important;
+        }
         #preset-transfer-modal .display-option-label {
-            display: flex; align-items: center; gap: 6px; color: #374151;
+            display: flex; align-items: center; gap: 6px; color: ${textColor};
             font-size: ${isMobile ? '12px' : '11px'}; font-weight: 500;
             cursor: pointer; user-select: none; margin-left: ${isMobile ? '0px' : '6px'};
         }
         #preset-transfer-modal .display-option-label input {
             ${isMobile ? 'transform: scale(1.1);' : 'transform: scale(1.0);'}
-            accent-color: #374151; cursor: pointer;
+            accent-color: ${isDark ? '#60a5fa' : '#374151'}; cursor: pointer;
         }
         #preset-transfer-modal #entry-search {
             width: 100%; padding: ${isMobile ? '14px 18px' : '12px 16px'};
-            background: #ffffff; color: #374151; border: 1px solid #d1d5db;
+            background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder};
             border-radius: 8px; font-size: ${isMobile ? '15px' : '14px'}; font-weight: 400;
             transition: all 0.3s ease; box-sizing: border-box;
+        }
+        #preset-transfer-modal #entry-search:focus {
+            border-color: ${isDark ? '#60a5fa' : '#6b7280'} !important;
+            box-shadow: 0 0 0 3px rgba(${isDark ? '96, 165, 250' : '107, 114, 128'}, 0.1) !important;
+            outline: none !important;
         }
         #preset-transfer-modal .selection-controls {
             display: ${isMobile ? 'grid' : 'flex'};
@@ -400,7 +841,15 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         #preset-transfer-modal .selection-btn {
             padding: ${isMobile ? '12px 18px' : '10px 16px'}; border: none; color: #ffffff;
             border-radius: 6px; cursor: pointer; font-size: ${isMobile ? '14px' : '13px'};
-            font-weight: 600; transition: all 0.3s ease;
+            font-weight: 600; transition: all 0.3s ease; display: flex; align-items: center;
+            justify-content: center; gap: 6px;
+        }
+        #preset-transfer-modal .selection-btn .btn-icon {
+            font-size: ${isMobile ? '16px' : '14px'}; font-weight: bold;
+            display: inline-flex; align-items: center; justify-content: center;
+            width: ${isMobile ? '20px' : '18px'}; height: ${isMobile ? '20px' : '18px'};
+            background: rgba(255,255,255,0.2); border-radius: 50%;
+            line-height: 1;
         }
         #preset-transfer-modal #select-all { background: #6b7280; ${isMobile && isPortrait ? '' : 'min-width: 90px;'} }
         #preset-transfer-modal #select-none { background: #9ca3af; ${isMobile && isPortrait ? '' : 'min-width: 90px;'} }
@@ -420,7 +869,7 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             position: relative;
         }
         #preset-transfer-modal .single-side {
-            border: 1px solid #e5e7eb; border-radius: 12px; background: #f9fafb;
+            border: 1px solid ${borderColor}; border-radius: 12px; background: ${sectionBg};
             padding: ${isMobile ? '16px' : '18px'};
         }
         /* 单预设模式下隐藏双预设容器 */
@@ -428,16 +877,16 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             display: none !important;
         }
         #preset-transfer-modal .entries-side {
-            border: 1px solid #e5e7eb; border-radius: 12px; background: #f9fafb;
+            border: 1px solid ${borderColor}; border-radius: 12px; background: ${sectionBg};
             padding: ${isMobile ? '16px' : '18px'};
         }
         #preset-transfer-modal .side-header {
             margin-bottom: ${isMobile ? '14px' : '16px'}; padding-bottom: ${isMobile ? '12px' : '14px'};
-            border-bottom: 1px solid #e5e7eb;
+            border-bottom: 1px solid ${borderColor};
         }
         #preset-transfer-modal .side-header h5 {
             margin: 0 0 ${isMobile ? '10px' : '12px'} 0; font-size: ${isMobile ? '16px' : '15px'};
-            font-weight: 700; color: #374151;
+            font-weight: 700; color: ${textColor};
         }
         #preset-transfer-modal .side-controls {
             display: flex; flex-direction: column; gap: ${isMobile ? '6px' : '10px'};
@@ -448,14 +897,15 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             ${isMobile ? 'grid-template-columns: 1fr 1fr; grid-gap: 6px;' : 'gap: 10px; flex-wrap: wrap;'}
         }
         #preset-transfer-modal .selection-count {
-            font-size: ${isMobile ? '13px' : '12px'}; color: #6b7280; font-weight: 500;
+            font-size: ${isMobile ? '13px' : '12px'}; color: ${isDark ? '#9ca3af' : '#6b7280'}; font-weight: 500;
         }
         #preset-transfer-modal .entries-list {
             min-height: ${isSmallScreen ? '160px' : isMobile ? '220px' : '200px'};
             max-height: ${isSmallScreen ? '260px' : isMobile ? '340px' : '300px'};
-            overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 10px;
-            background: #ffffff; padding: ${isMobile ? '12px' : '12px'};
-            -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: #d1d5db transparent;
+            overflow-y: auto; border: 1px solid ${borderColor}; border-radius: 10px;
+            background: ${inputBg}; padding: ${isMobile ? '12px' : '12px'};
+            -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+            scrollbar-color: ${isDark ? '#4b5563 transparent' : '#d1d5db transparent'};
         }
         #preset-transfer-modal .side-actions {
             margin-top: ${isMobile ? '16px' : '14px'}; display: flex; gap: ${isMobile ? '12px' : '10px'};
@@ -471,9 +921,13 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         #preset-transfer-modal .side-actions button[id$="-delete"] { background: #dc2626; }
         #preset-transfer-modal .side-actions button[id^="transfer-"] { background: #2563eb; }
         #preset-transfer-modal .side-controls .selection-btn {
-            background: #6b7280; padding: ${isMobile ? '6px 8px' : '4px 8px'};
+            background: ${isDark ? '#4b5563' : '#6b7280'}; padding: ${isMobile ? '6px 8px' : '4px 8px'};
             font-size: ${isMobile ? '10px' : '10px'}; border-radius: 6px;
-            ${isMobile ? 'min-width: 50px;' : ''}
+            ${isMobile ? 'min-width: 50px;' : ''} border: none; color: #ffffff;
+            transition: all 0.3s ease; cursor: pointer;
+        }
+        #preset-transfer-modal .side-controls .selection-btn:hover {
+            background: ${isDark ? '#6b7280' : '#4b5563'}; transform: translateY(-1px);
         }
         #preset-transfer-modal .entries-side.transfer-target {
             border-color: #3b82f6; background: #eff6ff;
@@ -483,6 +937,38 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         }
         #preset-transfer-modal .entries-side.new-entry-target {
             border-color: #10b981; background: #ecfdf5;
+        }
+
+        /* 搜索跳转按钮样式 */
+        #preset-transfer-modal .jump-btn {
+            position: absolute; right: ${isMobile ? '12px' : '8px'}; top: 50%;
+            transform: translateY(-50%); background: ${isDark ? '#3b82f6' : '#2563eb'};
+            border: none; border-radius: 50%; width: ${isMobile ? '32px' : '28px'};
+            height: ${isMobile ? '32px' : '28px'}; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            transition: all 0.3s ease; z-index: 10;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        #preset-transfer-modal .jump-btn:hover {
+            background: ${isDark ? '#2563eb' : '#1d4ed8'};
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+        #preset-transfer-modal .jump-btn .jump-icon {
+            color: #ffffff; font-size: ${isMobile ? '16px' : '14px'}; font-weight: bold;
+            line-height: 1; transform: rotate(-45deg);
+        }
+
+        /* 跳转高亮效果 */
+        #preset-transfer-modal .entry-item.jump-highlight {
+            background: ${isDark ? 'rgba(59, 130, 246, 0.2)' : 'rgba(37, 99, 235, 0.1)'} !important;
+            border-color: ${isDark ? '#3b82f6' : '#2563eb'} !important;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3) !important;
+            animation: pt-jumpPulse 2s ease-in-out;
+        }
+
+        @keyframes pt-jumpPulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.02); }
         }
 
         #preset-transfer-modal #insert-position-section {
@@ -505,20 +991,51 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         #preset-transfer-modal .modal-actions {
             display: flex; justify-content: center; flex-wrap: wrap;
             gap: ${isMobile ? '10px' : '14px'}; margin-top: ${isMobile ? '20px' : '25px'};
-            padding: ${isMobile ? '20px 0' : '24px 0'}; border-top: 1px solid #e5e7eb;
+            padding: ${isMobile ? '20px 0' : '24px 0'}; border-top: 1px solid ${borderColor};
         }
         #preset-transfer-modal .modal-actions button {
             padding: ${isMobile ? '14px 20px' : '12px 20px'}; border: none; color: #ffffff;
-            border-radius: 6px; cursor: pointer; font-size: ${isMobile ? '14px' : '14px'};
+            border-radius: 8px; cursor: pointer; font-size: ${isMobile ? '14px' : '14px'};
             font-weight: 600; transition: all 0.3s ease; letter-spacing: 0.3px;
         }
-        #preset-transfer-modal #execute-transfer { background: #374151; ${isMobile ? '' : 'min-width: 130px;'} }
-        #preset-transfer-modal #execute-delete { background: #6b7280; ${isMobile ? '' : 'min-width: 130px;'} }
+        #preset-transfer-modal .modal-actions button:hover {
+            transform: translateY(-1px); box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        #preset-transfer-modal .modal-actions button:active {
+            transform: translateY(0); box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        #preset-transfer-modal #execute-transfer { background: ${isDark ? '#4b5563' : '#374151'}; ${isMobile ? '' : 'min-width: 130px;'} }
+        #preset-transfer-modal #execute-delete { background: ${isDark ? '#6b7280' : '#6b7280'}; ${isMobile ? '' : 'min-width: 130px;'} }
         #preset-transfer-modal #edit-entry { background: #059669; ${isMobile ? '' : 'min-width: 130px;'} }
-        #preset-transfer-modal #close-modal { background: #9ca3af; ${isMobile ? '' : 'min-width: 90px;'} }
+        #preset-transfer-modal #close-modal { background: ${isDark ? '#6b7280' : '#9ca3af'}; ${isMobile ? '' : 'min-width: 90px;'} }
     `;
     if (!$('#preset-transfer-styles').length) {
         $('head').append(`<style id="preset-transfer-styles">${styles}</style>`);
+    }
+
+    // 设置CSS变量以支持主题切换
+    const modal = $('#preset-transfer-modal');
+    if (modal.length) {
+        const modalEl = modal[0];
+        if (isDark) {
+            modalEl.style.setProperty('--pt-scrollbar-track-color', '#2d2d2d');
+            modalEl.style.setProperty('--pt-scrollbar-thumb-color', '#4b5563');
+            modalEl.style.setProperty('--pt-scrollbar-thumb-hover-color', '#6b7280');
+            modalEl.style.setProperty('--pt-entry-hover-border', '#60a5fa');
+            modalEl.style.setProperty('--pt-entry-hover-shadow', 'rgba(0,0,0,0.3)');
+            modalEl.style.setProperty('--pt-entry-active-shadow', 'rgba(0,0,0,0.2)');
+            modalEl.style.setProperty('--pt-input-focus-border', '#60a5fa');
+            modalEl.style.setProperty('--pt-input-focus-shadow', 'rgba(96, 165, 250, 0.1)');
+        } else {
+            modalEl.style.setProperty('--pt-scrollbar-track-color', '#f3f4f6');
+            modalEl.style.setProperty('--pt-scrollbar-thumb-color', '#d1d5db');
+            modalEl.style.setProperty('--pt-scrollbar-thumb-hover-color', '#9ca3af');
+            modalEl.style.setProperty('--pt-entry-hover-border', '#9ca3af');
+            modalEl.style.setProperty('--pt-entry-hover-shadow', 'rgba(0,0,0,0.1)');
+            modalEl.style.setProperty('--pt-entry-active-shadow', 'rgba(0,0,0,0.05)');
+            modalEl.style.setProperty('--pt-input-focus-border', '#6b7280');
+            modalEl.style.setProperty('--pt-input-focus-shadow', 'rgba(107, 114, 128, 0.1)');
+        }
     }
 }
 
@@ -528,19 +1045,44 @@ function bindTransferEvents(apiInfo, modal) {
     const rightSelect = $('#right-preset');
     const loadBtn = $('#load-entries');
 
+    // 加载保存的设置
+    applyStoredSettings();
+
+    // 初始化主题按钮
+    updateThemeButton();
+
+    // 主题切换按钮事件
+    $('#theme-toggle-btn').on('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleTransferToolTheme();
+        // 重新应用样式以反映主题变化，但保持当前状态
+        setTimeout(() => {
+            updateModalTheme();
+        }, 150);
+    });
+
     leftSelect.add(rightSelect).on('change', function() {
         const hasLeft = leftSelect.val();
         const hasRight = rightSelect.val();
         // 至少选择一个预设就可以加载条目
         loadBtn.prop('disabled', !hasLeft && !hasRight);
         $('#entries-container').hide();
+        saveCurrentSettings(); // 保存设置
     });
 
     loadBtn.on('click', () => loadAndDisplayEntries(apiInfo));
     $('#entry-search').on('input', function() { filterDualEntries($(this).val()); });
-    $('#left-show-all').on('change', () => loadAndDisplayEntries(apiInfo));
-    $('#right-show-all').on('change', () => loadAndDisplayEntries(apiInfo));
-    $('#single-show-all').on('change', () => loadAndDisplayEntries(apiInfo));
+    $('#left-entry-search').on('input', function() { filterSideEntries('left', $(this).val()); });
+    $('#left-entry-search-inline').on('input', function() { filterSideEntries('left', $(this).val()); });
+    $('#right-entry-search-inline').on('input', function() { filterSideEntries('right', $(this).val()); });
+    $('#left-display-mode, #right-display-mode, #single-display-mode').on('change', () => {
+        loadAndDisplayEntries(apiInfo);
+        saveCurrentSettings();
+    });
+
+    // 绑定设置变更事件
+    $('#auto-close-modal, #auto-enable-entry').on('change', saveCurrentSettings);
 
     // 左侧控制
     $('#left-select-all').on('click', () => { $('#left-entries-list .entry-checkbox').prop('checked', true); updateDualSelectionCount(); });
@@ -578,6 +1120,29 @@ function bindTransferEvents(apiInfo, modal) {
     modal.css('display', 'flex');
 }
 
+function applyStoredSettings() {
+    const $ = getJQuery();
+    const settings = loadTransferSettings();
+
+    $('#auto-close-modal').prop('checked', settings.autoCloseModal);
+    $('#auto-enable-entry').prop('checked', settings.autoEnableEntry);
+    $('#left-display-mode').val(settings.leftDisplayMode);
+    $('#right-display-mode').val(settings.rightDisplayMode);
+    $('#single-display-mode').val(settings.singleDisplayMode);
+}
+
+function saveCurrentSettings() {
+    const $ = getJQuery();
+    const settings = {
+        autoCloseModal: $('#auto-close-modal').prop('checked'),
+        autoEnableEntry: $('#auto-enable-entry').prop('checked'),
+        leftDisplayMode: $('#left-display-mode').val(),
+        rightDisplayMode: $('#right-display-mode').val(),
+        singleDisplayMode: $('#single-display-mode').val(),
+    };
+    saveTransferSettings(settings);
+}
+
 function loadAndDisplayEntries(apiInfo) {
     const $ = getJQuery();
     const leftPreset = $('#left-preset').val();
@@ -601,11 +1166,16 @@ function loadAndDisplayEntries(apiInfo) {
 
 function loadSinglePresetMode(apiInfo, presetName) {
     const $ = getJQuery();
-    const showAll = $('#single-show-all').prop('checked');
+    const displayMode = $('#single-display-mode').val();
 
     try {
         const presetData = getPresetDataFromManager(apiInfo, presetName);
-        const entries = showAll ? getPromptEntries(presetData) : getOrderedPromptEntries(presetData);
+        let entries = getOrderedPromptEntries(presetData, displayMode);
+        if (displayMode === 'all') {
+            entries = sortEntriesByOrder(ensureAllEntriesHaveNewFields(entries));
+        } else {
+            entries = ensureAllEntriesHaveNewFields(entries);
+        }
 
         window.singleEntries = entries;
         window.singlePresetData = presetData;
@@ -618,6 +1188,12 @@ function loadSinglePresetMode(apiInfo, presetName) {
         $('#dual-container').hide();
         $('#single-container').show();
         $('#entries-container').show();
+
+        // 显示单一搜索栏，隐藏内联搜索栏
+        $('#entry-search').show();
+        $('.left-search-section').hide();
+        $('.left-search-container').hide();
+        $('.right-search-container').hide();
 
         updateSingleSelectionCount();
 
@@ -633,14 +1209,19 @@ function loadSinglePresetMode(apiInfo, presetName) {
 
 function loadDualPresetMode(apiInfo, leftPreset, rightPreset) {
     const $ = getJQuery();
-    const leftShowAll = $('#left-show-all').prop('checked');
-    const rightShowAll = $('#right-show-all').prop('checked');
+    const leftDisplayMode = $('#left-display-mode').val();
+    const rightDisplayMode = $('#right-display-mode').val();
 
     try {
         // 加载左侧条目
         if (leftPreset) {
             const leftData = getPresetDataFromManager(apiInfo, leftPreset);
-            const leftEntries = leftShowAll ? getPromptEntries(leftData) : getOrderedPromptEntries(leftData);
+            let leftEntries = getOrderedPromptEntries(leftData, leftDisplayMode);
+            if (leftDisplayMode === 'all') {
+                leftEntries = sortEntriesByOrder(ensureAllEntriesHaveNewFields(leftEntries));
+            } else {
+                leftEntries = ensureAllEntriesHaveNewFields(leftEntries);
+            }
             window.leftEntries = leftEntries;
             window.leftPresetData = leftData;
             displaySideEntries(leftEntries, 'left');
@@ -655,7 +1236,12 @@ function loadDualPresetMode(apiInfo, leftPreset, rightPreset) {
         // 加载右侧条目
         if (rightPreset) {
             const rightData = getPresetDataFromManager(apiInfo, rightPreset);
-            const rightEntries = rightShowAll ? getPromptEntries(rightData) : getOrderedPromptEntries(rightData);
+            let rightEntries = getOrderedPromptEntries(rightData, rightDisplayMode);
+            if (rightDisplayMode === 'all') {
+                rightEntries = sortEntriesByOrder(ensureAllEntriesHaveNewFields(rightEntries));
+            } else {
+                rightEntries = ensureAllEntriesHaveNewFields(rightEntries);
+            }
             window.rightEntries = rightEntries;
             window.rightPresetData = rightData;
             displaySideEntries(rightEntries, 'right');
@@ -671,6 +1257,12 @@ function loadDualPresetMode(apiInfo, leftPreset, rightPreset) {
         $('#single-container').hide();
         $('#dual-container').show();
         $('#entries-container').show();
+
+        // 隐藏单一搜索栏，显示内联搜索栏
+        $('#entry-search').hide();
+        $('.left-search-section').hide();
+        $('.left-search-container').show();
+        $('.right-search-container').show();
 
         updateDualSelectionCount();
         updateCompareButton();
@@ -691,6 +1283,15 @@ function displaySideEntries(entries, side) {
     if (!entriesList.length) { console.error(`${side}侧条目列表容器未找到`); return; }
 
     const { isMobile, isSmallScreen } = getDeviceInfo();
+    const isDark = isDarkTheme();
+
+    // 深色主题颜色变量
+    const entryBg = isDark ? '#2d2d2d' : '#ffffff';
+    const entryBorder = isDark ? '#4b5563' : '#e5e7eb';
+    const entryTextColor = isDark ? '#e0e0e0' : '#111827';
+    const entryDetailsColor = isDark ? '#9ca3af' : '#6b7280';
+    const emptyTextColor = isDark ? '#9ca3af' : '#6b7280';
+    const checkboxAccent = isDark ? '#60a5fa' : '#374151';
 
     // 添加默认插入位置
     let entriesHtml = `
@@ -702,18 +1303,20 @@ function displaySideEntries(entries, side) {
     `;
 
     if (entries.length === 0) {
-        entriesHtml += `<div style="color: #6b7280; text-align: center; padding: ${isMobile ? '30px 15px' : '40px 20px'}; font-size: ${isMobile ? '14px' : '13px'}; font-weight: 500;"><div style="font-size: 48px; margin-bottom: 15px; opacity: 0.3;">📭</div><div>没有条目</div></div>`;
+        entriesHtml += `<div style="color: ${emptyTextColor}; text-align: center; padding: ${isMobile ? '30px 15px' : '40px 20px'}; font-size: ${isMobile ? '14px' : '13px'}; font-weight: 500;"><div style="font-size: 48px; margin-bottom: 15px; opacity: 0.3;">📭</div><div>没有条目</div></div>`;
     } else {
         entriesHtml += entries.map((entry, index) => {
             return `
-                <div class="entry-item" data-index="${index}" data-side="${side}" style="border-color: #e5e7eb; background: #ffffff; transition: all 0.3s ease; cursor: pointer; position: relative; display: flex; align-items: center; padding: ${isSmallScreen ? '8px 6px' : isMobile ? '8px 8px' : '12px 14px'}; margin-bottom: ${isMobile ? '6px' : '6px'}; border: 1px solid #e5e7eb; border-radius: 8px; ${isMobile ? 'min-height: 32px;' : 'min-height: 40px;'}">
-                    <input type="checkbox" class="entry-checkbox" style="margin-right: ${isMobile ? '8px' : '10px'}; width: ${isMobile ? '14px' : '14px'}; height: ${isMobile ? '14px' : '14px'}; accent-color: #374151; cursor: pointer; position: relative; z-index: 10;">
+                <div class="entry-item" data-index="${index}" data-side="${side}" data-identifier="${entry.identifier}" style="border-color: ${entryBorder}; background: ${entryBg}; transition: all 0.3s ease; cursor: pointer; position: relative; display: flex; align-items: center; padding: ${isSmallScreen ? '8px 6px' : isMobile ? '8px 8px' : '12px 14px'}; margin-bottom: ${isMobile ? '6px' : '6px'}; border: 1px solid ${entryBorder}; border-radius: 8px; ${isMobile ? 'min-height: 32px;' : 'min-height: 40px;'}">
+                    <input type="checkbox" class="entry-checkbox" style="margin-right: ${isMobile ? '8px' : '10px'}; width: ${isMobile ? '14px' : '14px'}; height: ${isMobile ? '14px' : '14px'}; accent-color: ${checkboxAccent}; cursor: pointer; position: relative; z-index: 10;">
                     <div style="flex: 1; ${isMobile ? 'min-width: 0;' : ''}">
-                        <div class="entry-name" style="font-weight: 600; color: #111827; font-size: ${isSmallScreen ? '11px' : isMobile ? '11px' : '13px'}; word-break: break-word; line-height: 1.2;">${entry.name}</div>
-                        ${isMobile ? '' : `<div class="entry-details" style="font-size: 11px; color: #6b7280; line-height: 1.4; margin-top: 2px;">
+                        <div class="entry-name" style="font-weight: 600; color: ${entryTextColor}; font-size: ${isSmallScreen ? '11px' : isMobile ? '11px' : '13px'}; word-break: break-word; line-height: 1.2;">${entry.name}</div>
+                        ${isMobile ? '' : `<div class="entry-details" style="font-size: 11px; color: ${entryDetailsColor}; line-height: 1.4; margin-top: 2px;">
                             <span>👤 ${entry.role || 'system'}</span>
                             <span style="margin-left: 8px;">📍 ${entry.injection_position || 'relative'}</span>
                             <span style="margin-left: 8px;">🔢 ${entry.injection_depth ?? 4}</span>
+                            <span style="margin-left: 8px;">#️⃣ ${entry.injection_order ?? 100}</span>
+                            <span style="margin-left: 8px;">⚡️ ${entry.injection_trigger?.join(', ') || '无'}</span>
                         </div>`}
                     </div>
                 </div>`;
@@ -783,6 +1386,15 @@ function displaySingleEntries(entries) {
     if (!entriesList.length) { console.error('单预设条目列表容器未找到'); return; }
 
     const { isMobile, isSmallScreen } = getDeviceInfo();
+    const isDark = isDarkTheme();
+
+    // 深色主题颜色变量
+    const entryBg = isDark ? '#2d2d2d' : '#ffffff';
+    const entryBorder = isDark ? '#4b5563' : '#e5e7eb';
+    const entryTextColor = isDark ? '#e0e0e0' : '#111827';
+    const entryDetailsColor = isDark ? '#9ca3af' : '#6b7280';
+    const emptyTextColor = isDark ? '#9ca3af' : '#6b7280';
+    const checkboxAccent = isDark ? '#60a5fa' : '#374151';
 
     // 添加默认插入位置
     let entriesHtml = `
@@ -794,18 +1406,20 @@ function displaySingleEntries(entries) {
     `;
 
     if (entries.length === 0) {
-        entriesHtml += `<div style="color: #6b7280; text-align: center; padding: ${isMobile ? '30px 15px' : '40px 20px'}; font-size: ${isMobile ? '14px' : '13px'}; font-weight: 500;"><div style="font-size: 48px; margin-bottom: 15px; opacity: 0.3;">📭</div><div>没有条目</div></div>`;
+        entriesHtml += `<div style="color: ${emptyTextColor}; text-align: center; padding: ${isMobile ? '30px 15px' : '40px 20px'}; font-size: ${isMobile ? '14px' : '13px'}; font-weight: 500;"><div style="font-size: 48px; margin-bottom: 15px; opacity: 0.3;">📭</div><div>没有条目</div></div>`;
     } else {
         entriesHtml += entries.map((entry, index) => {
             return `
-                <div class="entry-item" data-index="${index}" data-side="single" style="border-color: #e5e7eb; background: #ffffff; transition: all 0.3s ease; cursor: pointer; position: relative; display: flex; align-items: center; padding: ${isSmallScreen ? '8px 6px' : isMobile ? '8px 8px' : '12px 14px'}; margin-bottom: ${isMobile ? '6px' : '6px'}; border: 1px solid #e5e7eb; border-radius: 8px; ${isMobile ? 'min-height: 32px;' : 'min-height: 40px;'}">
-                    <input type="checkbox" class="entry-checkbox" style="margin-right: ${isMobile ? '8px' : '10px'}; width: ${isMobile ? '14px' : '14px'}; height: ${isMobile ? '14px' : '14px'}; accent-color: #374151; cursor: pointer; position: relative; z-index: 10;">
+                <div class="entry-item" data-index="${index}" data-side="single" data-identifier="${entry.identifier}" style="border-color: ${entryBorder}; background: ${entryBg}; transition: all 0.3s ease; cursor: pointer; position: relative; display: flex; align-items: center; padding: ${isSmallScreen ? '8px 6px' : isMobile ? '8px 8px' : '12px 14px'}; margin-bottom: ${isMobile ? '6px' : '6px'}; border: 1px solid ${entryBorder}; border-radius: 8px; ${isMobile ? 'min-height: 32px;' : 'min-height: 40px;'}">
+                    <input type="checkbox" class="entry-checkbox" style="margin-right: ${isMobile ? '8px' : '10px'}; width: ${isMobile ? '14px' : '14px'}; height: ${isMobile ? '14px' : '14px'}; accent-color: ${checkboxAccent}; cursor: pointer; position: relative; z-index: 10;">
                     <div style="flex: 1; ${isMobile ? 'min-width: 0;' : ''}">
-                        <div class="entry-name" style="font-weight: 600; color: #111827; font-size: ${isSmallScreen ? '11px' : isMobile ? '11px' : '13px'}; word-break: break-word; line-height: 1.2;">${entry.name}</div>
-                        ${isMobile ? '' : `<div class="entry-details" style="font-size: 11px; color: #6b7280; line-height: 1.4; margin-top: 2px;">
+                        <div class="entry-name" style="font-weight: 600; color: ${entryTextColor}; font-size: ${isSmallScreen ? '11px' : isMobile ? '11px' : '13px'}; word-break: break-word; line-height: 1.2;">${entry.name}</div>
+                        ${isMobile ? '' : `<div class="entry-details" style="font-size: 11px; color: ${entryDetailsColor}; line-height: 1.4; margin-top: 2px;">
                             <span>👤 ${entry.role || 'system'}</span>
                             <span style="margin-left: 8px;">📍 ${entry.injection_position || 'relative'}</span>
                             <span style="margin-left: 8px;">🔢 ${entry.injection_depth ?? 4}</span>
+                            <span style="margin-left: 8px;">#️⃣ ${entry.injection_order ?? 100}</span>
+                            <span style="margin-left: 8px;">⚡️ ${entry.injection_trigger?.join(', ') || '无'}</span>
                         </div>`}
                     </div>
                 </div>`;
@@ -883,12 +1497,31 @@ function filterDualEntries(searchTerm) {
     const term = searchTerm.toLowerCase();
     const $ = getJQuery();
 
+    // 清除之前的搜索结果
+    clearSearchResults();
+
+    if (!term) {
+        // 如果搜索词为空，显示所有条目
+        $('#left-entries-list .entry-item, #right-entries-list .entry-item, #single-entries-list .entry-item').each(function() {
+            const $item = $(this);
+            if (!$item.hasClass('position-item')) {
+                $item.show();
+            }
+        });
+        return;
+    }
+
     // 过滤双预设界面
     $('#left-entries-list .entry-item, #right-entries-list .entry-item').each(function() {
         const $item = $(this);
         if (!$item.hasClass('position-item')) {
             const name = $item.find('.entry-name').text().toLowerCase();
-            $item.toggle(name.includes(term));
+            const matches = name.includes(term);
+            $item.toggle(matches);
+
+            if (matches) {
+                addJumpButton($item);
+            }
         }
     });
 
@@ -897,9 +1530,156 @@ function filterDualEntries(searchTerm) {
         const $item = $(this);
         if (!$item.hasClass('position-item')) {
             const name = $item.find('.entry-name').text().toLowerCase();
-            $item.toggle(name.includes(term));
+            const matches = name.includes(term);
+            $item.toggle(matches);
+
+            if (matches) {
+                addJumpButton($item);
+            }
         }
     });
+}
+
+function filterSideEntries(side, searchTerm) {
+    const term = searchTerm.toLowerCase();
+    const $ = getJQuery();
+
+    // 清除指定侧的搜索结果
+    clearSearchResults(side);
+
+    if (!term) {
+        // 如果搜索词为空，显示所有条目
+        $(`#${side}-entries-list .entry-item`).each(function() {
+            const $item = $(this);
+            if (!$item.hasClass('position-item')) {
+                $item.show();
+            }
+        });
+        return;
+    }
+
+    // 只过滤指定侧的条目
+    $(`#${side}-entries-list .entry-item`).each(function() {
+        const $item = $(this);
+        if (!$item.hasClass('position-item')) {
+            const name = $item.find('.entry-name').text().toLowerCase();
+            const matches = name.includes(term);
+            $item.toggle(matches);
+
+            if (matches) {
+                addJumpButton($item);
+            }
+        }
+    });
+}
+
+// 搜索跳转功能相关函数
+function addJumpButton($item) {
+    const $ = getJQuery();
+
+    // 检查是否已经有跳转按钮
+    if ($item.find('.jump-btn').length > 0) {
+        return;
+    }
+
+    // 创建跳转按钮
+    const $jumpBtn = $(`
+        <button class="jump-btn" title="跳转到原位置">
+            <span class="jump-icon">↗</span>
+        </button>
+    `);
+
+    // 添加点击事件
+    $jumpBtn.on('click', function(e) {
+        e.stopPropagation();
+        jumpToOriginalPosition($item);
+    });
+
+    // 将按钮添加到条目右侧（直接添加到条目容器）
+    $item.append($jumpBtn);
+}
+
+function clearSearchResults(side = null) {
+    const $ = getJQuery();
+
+    if (side) {
+        // 清除指定侧的跳转按钮
+        $(`#${side}-entries-list .jump-btn`).remove();
+    } else {
+        // 清除所有跳转按钮
+        $('.jump-btn').remove();
+    }
+}
+
+function jumpToOriginalPosition($searchItem) {
+    const $ = getJQuery();
+    const identifier = $searchItem.data('identifier');
+
+    if (!identifier) return;
+
+    // 确定是哪个列表
+    let listSelector = '';
+    if ($searchItem.closest('#left-entries-list').length > 0) {
+        listSelector = '#left-entries-list';
+    } else if ($searchItem.closest('#right-entries-list').length > 0) {
+        listSelector = '#right-entries-list';
+    } else if ($searchItem.closest('#single-entries-list').length > 0) {
+        listSelector = '#single-entries-list';
+    }
+
+    if (!listSelector) return;
+
+    // 临时显示所有条目以找到原始位置
+    const $allItems = $(`${listSelector} .entry-item`);
+    $allItems.show();
+
+    // 找到对应的原始条目
+    const $originalItem = $allItems.filter(function() {
+        return $(this).data('identifier') === identifier && !$(this).hasClass('position-item');
+    }).first();
+
+    if ($originalItem.length > 0) {
+        // 滚动到原始位置
+        $originalItem[0].scrollIntoView({
+            behavior: 'smooth',
+            block: 'center'
+        });
+
+        // 高亮显示目标条目
+        $originalItem.addClass('jump-highlight');
+        setTimeout(() => {
+            $originalItem.removeClass('jump-highlight');
+        }, 2000);
+
+        // 清空搜索栏并恢复完整列表显示
+        setTimeout(() => {
+            const searchInput = getActiveSearchInput(listSelector);
+            if (searchInput && searchInput.val()) {
+                searchInput.val(''); // 清空搜索栏
+
+                // 显示所有条目
+                if (listSelector === '#left-entries-list') {
+                    filterSideEntries('left', '');
+                } else if (listSelector === '#right-entries-list') {
+                    filterSideEntries('right', '');
+                } else {
+                    filterDualEntries('');
+                }
+            }
+        }, 100);
+    }
+}
+
+function getActiveSearchInput(listSelector) {
+    const $ = getJQuery();
+
+    if (listSelector === '#left-entries-list') {
+        return $('#left-entry-search-inline').is(':visible') ? $('#left-entry-search-inline') : $('#left-entry-search');
+    } else if (listSelector === '#right-entries-list') {
+        return $('#right-entry-search-inline');
+    } else {
+        return $('#entry-search');
+    }
 }
 
 function getSelectedEntries(side) {
@@ -1025,6 +1805,7 @@ async function executeTransferToPosition(apiInfo, fromSide, toSide, targetPositi
     const selectedEntries = window.transferMode.selectedEntries;
     const fromPreset = $(`#${fromSide}-preset`).val();
     const toPreset = $(`#${toSide}-preset`).val();
+    const displayMode = $(`#${toSide}-display-mode`).val();
 
     try {
         // 构建插入位置
@@ -1037,7 +1818,7 @@ async function executeTransferToPosition(apiInfo, fromSide, toSide, targetPositi
 
         // 执行转移
         const autoEnable = $('#auto-enable-entry').prop('checked');
-        await performTransfer(apiInfo, fromPreset, toPreset, selectedEntries, insertPosition, autoEnable);
+        await performTransfer(apiInfo, fromPreset, toPreset, selectedEntries, insertPosition, autoEnable, displayMode);
 
         let successMessage = `成功转移 ${selectedEntries.length} 个条目！`;
         alert(successMessage);
@@ -1064,11 +1845,14 @@ async function executeTransferToPosition(apiInfo, fromSide, toSide, targetPositi
 function executeNewEntryAtPosition(apiInfo, side, targetPosition) {
     const $ = getJQuery();
     let presetName;
+    let displayMode;
 
     if (side === 'single') {
         presetName = window.singlePresetName;
+        displayMode = $('#single-display-mode').val();
     } else {
         presetName = window.newEntryMode.presetName;
+        displayMode = $(`#${side}-display-mode`).val();
     }
 
     // 构建插入位置
@@ -1095,7 +1879,7 @@ function executeNewEntryAtPosition(apiInfo, side, targetPosition) {
 
     // 打开编辑模态框
     const autoEnable = $('#auto-enable-entry').prop('checked');
-    createEditEntryModal(apiInfo, presetName, defaultEntry, insertPosition, autoEnable, side);
+    createEditEntryModal(apiInfo, presetName, defaultEntry, insertPosition, autoEnable, side, null, displayMode);
 }
 
 function highlightDiff(base, compare) {
@@ -1171,12 +1955,12 @@ function showConfirmDialog(message, onConfirm) {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
             background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
             z-index: 10003; display: flex; align-items: center; justify-content: center;
-            padding: 20px; animation: fadeIn 0.2s ease-out;
+            padding: 20px; animation: pt-fadeIn 0.2s ease-out;
         }
         #confirm-dialog-modal .confirm-dialog-content {
             background: #ffffff; border-radius: 16px; padding: 24px;
             max-width: 400px; width: 90%; color: #374151;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.15); animation: slideUp 0.2s ease-out;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15); animation: pt-slideUp 0.2s ease-out;
         }
         #confirm-dialog-modal .confirm-dialog-header {
             margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #e5e7eb;
@@ -1213,20 +1997,25 @@ function showConfirmDialog(message, onConfirm) {
 }
 
 function isEntryDifferent(leftEntry, rightEntry) {
+    const left = ensureNewVersionFields(leftEntry);
+    const right = ensureNewVersionFields(rightEntry);
+
     // 标准化位置值
     const normalizePosition = (pos) => pos || 'relative';
-    const leftPos = normalizePosition(leftEntry.injection_position);
-    const rightPos = normalizePosition(rightEntry.injection_position);
+    const leftPos = normalizePosition(left.injection_position);
+    const rightPos = normalizePosition(right.injection_position);
 
-    // 如果两个条目的位置都是relative，则忽略位置差异
-    // 因为relative位置在不同预设中可能因条目数量不同而有所差异，但实际功能相同
     const positionDifferent = (leftPos === 'relative' && rightPos === 'relative') ? false : (leftPos !== rightPos);
 
-    return leftEntry.content !== rightEntry.content ||
-           leftEntry.role !== rightEntry.role ||
+    const triggersDifferent = JSON.stringify([...(left.injection_trigger || [])].sort()) !== JSON.stringify([...(right.injection_trigger || [])].sort());
+
+    return left.content !== right.content ||
+           left.role !== right.role ||
            positionDifferent ||
-           leftEntry.injection_depth !== rightEntry.injection_depth ||
-           leftEntry.forbid_overrides !== rightEntry.forbid_overrides;
+           left.injection_depth !== right.injection_depth ||
+           left.forbid_overrides !== right.forbid_overrides ||
+           left.injection_order !== right.injection_order ||
+           triggersDifferent;
 }
 
 function showCompareModal(apiInfo) {
@@ -1321,13 +2110,17 @@ function createCompareModal(apiInfo, leftPreset, rightPreset, commonEntries) {
     `;
 
     $('body').append(modalHtml);
+    $('#compare-modal').data({apiInfo, leftPreset, rightPreset, commonEntries});
     applyCompareModalStyles(isMobile, isSmallScreen, isPortrait);
     bindCompareModalEvents(apiInfo, leftPreset, rightPreset, commonEntries);
 }
 
 function createCompareEntryHtml(entry, leftPreset, rightPreset) {
-    const leftContent = entry.left.content || '';
-    const rightContent = entry.right.content || '';
+    const left = ensureNewVersionFields(entry.left);
+    const right = ensureNewVersionFields(entry.right);
+    const leftContent = left.content || '';
+    const rightContent = right.content || '';
+    const triggersDifferent = JSON.stringify([...(left.injection_trigger || [])].sort()) !== JSON.stringify([...(right.injection_trigger || [])].sort());
 
     return `
         <div class="compare-entry">
@@ -1367,6 +2160,14 @@ function createCompareEntryHtml(entry, leftPreset, rightPreset) {
                             <span class="value ${entry.left.injection_depth !== entry.right.injection_depth ? 'different' : ''}">${entry.left.injection_depth ?? 4}</span>
                         </div>
                         <div class="detail-row">
+                            <span class="label">顺序:</span>
+                            <span class="value ${left.injection_order !== right.injection_order ? 'different' : ''}">${left.injection_order}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">触发:</span>
+                            <span class="value ${triggersDifferent ? 'different' : ''}">${left.injection_trigger.join(', ') || '无'}</span>
+                        </div>
+                        <div class="detail-row">
                             <span class="label">内容:</span>
                             <div class="content-preview ${leftContent !== rightContent ? 'different' : ''}">
                                 ${leftContent !== rightContent ? highlightDiff(rightContent, leftContent) : leftContent}
@@ -1390,6 +2191,14 @@ function createCompareEntryHtml(entry, leftPreset, rightPreset) {
                             <span class="value ${entry.left.injection_depth !== entry.right.injection_depth ? 'different' : ''}">${entry.right.injection_depth ?? 4}</span>
                         </div>
                         <div class="detail-row">
+                            <span class="label">顺序:</span>
+                            <span class="value ${left.injection_order !== right.injection_order ? 'different' : ''}">${right.injection_order}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="label">触发:</span>
+                            <span class="value ${triggersDifferent ? 'different' : ''}">${right.injection_trigger.join(', ') || '无'}</span>
+                        </div>
+                        <div class="detail-row">
                             <span class="label">内容:</span>
                             <div class="content-preview ${leftContent !== rightContent ? 'different' : ''}">
                                 ${leftContent !== rightContent ? highlightDiff(leftContent, rightContent) : rightContent}
@@ -1403,6 +2212,12 @@ function createCompareEntryHtml(entry, leftPreset, rightPreset) {
 }
 
 function applyCompareModalStyles(isMobile, isSmallScreen, isPortrait) {
+    const isDark = isDarkTheme();
+    const bgColor = isDark ? '#1a1a1a' : '#ffffff';
+    const textColor = isDark ? '#e0e0e0' : '#374151';
+    const borderColor = isDark ? '#374151' : '#e5e7eb';
+    const sectionBg = isDark ? '#262626' : '#f9fafb';
+
     const styles = `
         #compare-modal {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
@@ -1410,21 +2225,22 @@ function applyCompareModalStyles(isMobile, isSmallScreen, isPortrait) {
             z-index: 10002; display: flex; align-items: ${isMobile ? 'flex-start' : 'center'};
             justify-content: center; padding: ${isMobile ? '10px' : '20px'};
             ${isMobile ? 'padding-top: 20px;' : ''}
-            overflow-y: auto; -webkit-overflow-scrolling: touch; animation: fadeIn 0.3s ease-out;
+            overflow-y: auto; -webkit-overflow-scrolling: touch; animation: pt-fadeIn 0.3s ease-out;
         }
         #compare-modal .compare-modal-content {
-            background: #ffffff; border-radius: ${isMobile ? '16px' : '20px'};
+            background: ${bgColor}; border-radius: ${isMobile ? '16px' : '20px'};
             padding: ${isSmallScreen ? '24px' : isMobile ? '28px' : '32px'};
             max-width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '900px'};
             width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '90%'};
             max-height: ${isMobile ? '90vh' : '85vh'};
-            overflow-y: auto; color: #374151; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow-y: auto; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
             ${isMobile ? '-webkit-overflow-scrolling: touch;' : ''}
-            animation: slideUp 0.3s ease-out;
+            animation: pt-slideUp 0.3s ease-out;
+            transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
         }
         #compare-modal .compare-modal-header {
             text-align: center; margin-bottom: ${isMobile ? '24px' : '28px'};
-            padding-bottom: ${isMobile ? '18px' : '22px'}; border-bottom: 1px solid #e5e7eb;
+            padding-bottom: ${isMobile ? '18px' : '22px'}; border-bottom: 1px solid ${borderColor};
         }
         #compare-modal .compare-modal-header > div:first-child {
             display: flex; align-items: center; justify-content: center;
@@ -1433,17 +2249,17 @@ function applyCompareModalStyles(isMobile, isSmallScreen, isPortrait) {
         #compare-modal .close-compare-btn {
             position: absolute; right: 0; top: 50%; transform: translateY(-50%);
             background: none; border: none; font-size: ${isMobile ? '18px' : '16px'};
-            cursor: pointer; color: #6b7280; padding: 4px;
+            cursor: pointer; color: ${isDark ? '#9ca3af' : '#6b7280'}; padding: 4px;
         }
-        #compare-modal .close-compare-btn:hover { color: #374151; }
+        #compare-modal .close-compare-btn:hover { color: ${textColor}; }
         #compare-modal .compare-modal-header span { font-size: ${isSmallScreen ? '28px' : isMobile ? '32px' : '36px'}; }
         #compare-modal .compare-modal-header h2 {
             margin: 0; font-size: ${isSmallScreen ? '22px' : isMobile ? '24px' : '28px'};
-            font-weight: 700; color: #111827; letter-spacing: -0.5px;
+            font-weight: 700; color: ${isDark ? '#f3f4f6' : '#111827'}; letter-spacing: -0.5px;
         }
         #compare-modal .compare-info {
             margin-top: 8px; font-size: ${isMobile ? '14px' : '13px'};
-            color: #6b7280; font-weight: 500;
+            color: ${isDark ? '#9ca3af' : '#6b7280'}; font-weight: 500;
         }
         #compare-modal .compare-stats {
             display: flex; justify-content: center; gap: ${isMobile ? '20px' : '30px'};
@@ -1451,35 +2267,35 @@ function applyCompareModalStyles(isMobile, isSmallScreen, isPortrait) {
         }
         #compare-modal .stat-item {
             text-align: center; padding: ${isMobile ? '12px' : '16px'};
-            background: #f9fafb; border-radius: 12px; min-width: ${isMobile ? '80px' : '100px'};
+            background: ${sectionBg}; border-radius: 12px; min-width: ${isMobile ? '80px' : '100px'};
         }
         #compare-modal .stat-number {
             display: block; font-size: ${isMobile ? '24px' : '28px'}; font-weight: 700;
-            color: #374151; margin-bottom: 4px;
+            color: ${textColor}; margin-bottom: 4px;
         }
         #compare-modal .stat-number.different { color: #dc2626; }
         #compare-modal .stat-number.same { color: #059669; }
         #compare-modal .stat-label {
-            font-size: ${isMobile ? '12px' : '11px'}; color: #6b7280; font-weight: 500;
+            font-size: ${isMobile ? '12px' : '11px'}; color: ${isDark ? '#9ca3af' : '#6b7280'}; font-weight: 500;
         }
         #compare-modal .compare-content h3 {
             margin: ${isMobile ? '24px 0 16px' : '28px 0 20px'}; font-size: ${isMobile ? '18px' : '20px'};
-            font-weight: 600; color: #374151;
+            font-weight: 600; color: ${textColor};
         }
         #compare-modal .compare-entry {
-            border: 1px solid #e5e7eb; border-radius: 12px; margin-bottom: ${isMobile ? '16px' : '20px'};
-            background: #ffffff; overflow: hidden;
+            border: 1px solid ${borderColor}; border-radius: 12px; margin-bottom: ${isMobile ? '16px' : '20px'};
+            background: ${bgColor}; overflow: hidden;
         }
         #compare-modal .compare-entry-header {
-            background: #f9fafb; padding: ${isMobile ? '12px 16px' : '14px 20px'};
-            border-bottom: 1px solid #e5e7eb;
+            background: ${sectionBg}; padding: ${isMobile ? '12px 16px' : '14px 20px'};
+            border-bottom: 1px solid ${borderColor};
         }
         #compare-modal .compare-entry-header {
             display: flex; justify-content: space-between; align-items: center;
             flex-wrap: wrap; gap: ${isMobile ? '8px' : '12px'};
         }
         #compare-modal .compare-entry-header h4 {
-            margin: 0; font-size: ${isMobile ? '16px' : '18px'}; font-weight: 600; color: #374151;
+            margin: 0; font-size: ${isMobile ? '16px' : '18px'}; font-weight: 600; color: ${textColor};
             flex: 1; min-width: 0;
         }
         #compare-modal .compare-actions {
@@ -1487,19 +2303,19 @@ function applyCompareModalStyles(isMobile, isSmallScreen, isPortrait) {
             ${isMobile ? 'display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;' : ''}
         }
         #compare-modal .compare-action-btn {
-            padding: ${isMobile ? '4px 8px' : '6px 10px'}; border: 1px solid #d1d5db;
-            background: #ffffff; color: #374151; border-radius: 6px; cursor: pointer;
+            padding: ${isMobile ? '4px 8px' : '6px 10px'}; border: 1px solid ${isDark ? '#4b5563' : '#d1d5db'};
+            background: ${isDark ? '#374151' : '#ffffff'}; color: ${textColor}; border-radius: 6px; cursor: pointer;
             font-size: ${isMobile ? '11px' : '12px'}; font-weight: 500;
             transition: all 0.2s ease; white-space: nowrap;
         }
         #compare-modal .compare-action-btn:hover {
-            background: #f3f4f6; border-color: #9ca3af;
+            background: ${isDark ? '#4b5563' : '#f3f4f6'}; border-color: ${isDark ? '#6b7280' : '#9ca3af'};
         }
         #compare-modal .compare-action-btn.edit-btn {
-            background: #dbeafe; border-color: #3b82f6; color: #1d4ed8;
+            background: ${isDark ? '#1e3a8a' : '#dbeafe'}; border-color: #3b82f6; color: ${isDark ? '#93c5fd' : '#1d4ed8'};
         }
         #compare-modal .compare-action-btn.edit-btn:hover {
-            background: #bfdbfe;
+            background: ${isDark ? '#1e40af' : '#bfdbfe'};
         }
         #compare-modal .compare-sides {
             display: ${isMobile ? 'flex' : 'grid'};
@@ -1509,12 +2325,12 @@ function applyCompareModalStyles(isMobile, isSmallScreen, isPortrait) {
             padding: ${isMobile ? '16px' : '20px'};
         }
         #compare-modal .compare-side.right-side {
-            border-left: ${isMobile ? 'none' : '1px solid #e5e7eb'};
-            border-top: ${isMobile ? '1px solid #e5e7eb' : 'none'};
+            border-left: ${isMobile ? 'none' : `1px solid ${borderColor}`};
+            border-top: ${isMobile ? `1px solid ${borderColor}` : 'none'};
         }
         #compare-modal .compare-side h5 {
             margin: 0 0 ${isMobile ? '12px' : '16px'} 0; font-size: ${isMobile ? '14px' : '16px'};
-            font-weight: 600; color: #6b7280;
+            font-weight: 600; color: ${isDark ? '#9ca3af' : '#6b7280'};
         }
         #compare-modal .detail-row {
             margin-bottom: ${isMobile ? '8px' : '12px'}; display: flex; align-items: flex-start;
@@ -1522,30 +2338,32 @@ function applyCompareModalStyles(isMobile, isSmallScreen, isPortrait) {
             ${isMobile ? 'flex-direction: column; align-items: stretch;' : ''}
         }
         #compare-modal .detail-row .label {
-            font-weight: 600; color: #6b7280; font-size: ${isMobile ? '12px' : '13px'};
+            font-weight: 600; color: ${isDark ? '#9ca3af' : '#6b7280'}; font-size: ${isMobile ? '12px' : '13px'};
             min-width: ${isMobile ? '40px' : '50px'};
             ${isMobile ? 'margin-bottom: 2px;' : ''}
         }
         #compare-modal .detail-row .value {
-            font-size: ${isMobile ? '12px' : '13px'}; color: #374151;
+            font-size: ${isMobile ? '12px' : '13px'}; color: ${textColor};
         }
         #compare-modal .detail-row .value.different {
-            background: #fef2f2; color: #dc2626; padding: 2px 6px; border-radius: 4px;
+            background: ${isDark ? '#7f1d1d' : '#fef2f2'}; color: #dc2626; padding: 2px 6px; border-radius: 4px;
             font-weight: 600;
         }
         #compare-modal .content-preview {
-            background: #f9fafb; padding: ${isMobile ? '8px' : '10px'}; border-radius: 6px;
-            font-size: ${isMobile ? '11px' : '12px'}; color: #374151; line-height: 1.4;
+            background: ${isDark ? '#1f2937' : '#f9fafb'}; padding: ${isMobile ? '8px' : '10px'}; border-radius: 6px;
+            font-size: ${isMobile ? '11px' : '12px'}; color: ${textColor}; line-height: 1.4;
             font-family: 'Consolas', 'Monaco', 'Courier New', monospace; white-space: pre-wrap;
             word-break: break-word; max-height: 100px; overflow-y: auto;
             ${isMobile ? 'max-height: 60px; width: 100%; min-height: 40px;' : ''}
+            border: 1px solid ${isDark ? '#374151' : 'transparent'};
         }
         #compare-modal .content-preview.different {
-            background: #fef2f2; border: 1px solid #fecaca;
+            background: ${isDark ? '#5c1a1a' : '#fef2f2'}; border: 1px solid ${isDark ? '#dc2626' : '#fecaca'};
+            color: ${isDark ? '#fecaca' : '#dc2626'} !important;
         }
         #compare-modal .diff-highlight {
-            background-color: #ffcdd2;
-            color: #c62828;
+            background-color: ${isDark ? '#8c2a2a' : '#ffcdd2'};
+            color: ${isDark ? '#fee2e2' : '#c62828'};
             padding: 1px 3px;
             border-radius: 3px;
             font-weight: 600;
@@ -1559,7 +2377,7 @@ function applyCompareModalStyles(isMobile, isSmallScreen, isPortrait) {
         }
         #compare-modal .compare-modal-actions {
             display: flex; justify-content: center; margin-top: ${isMobile ? '24px' : '28px'};
-            padding-top: ${isMobile ? '20px' : '24px'}; border-top: 1px solid #e5e7eb;
+            padding-top: ${isMobile ? '20px' : '24px'}; border-top: 1px solid ${borderColor};
         }
         #compare-modal .compare-modal-actions button {
             padding: ${isMobile ? '14px 24px' : '12px 22px'}; border: none; color: #ffffff;
@@ -1640,18 +2458,20 @@ function bindCompareModalEvents(apiInfo, leftPreset, rightPreset, commonEntries)
 async function copyEntryBetweenPresets(apiInfo, fromPreset, toPreset, entryData, entryName) {
     try {
         const toPresetData = getPresetDataFromManager(apiInfo, toPreset);
-        const targetPrompt = toPresetData.prompts.find(p => p && p.name === entryName && !p.system_prompt && !p.marker);
+        const targetPromptIndex = toPresetData.prompts.findIndex(p => p && p.name === entryName && !p.system_prompt && !p.marker);
 
-        if (!targetPrompt) {
+        if (targetPromptIndex === -1) {
             throw new Error(`在预设 "${toPreset}" 中未找到目标条目 "${entryName}"`);
         }
 
-        // 更新目标条目的属性，而不是替换整个对象，以保留identifier
-        targetPrompt.content = entryData.content;
-        targetPrompt.role = entryData.role;
-        targetPrompt.injection_depth = entryData.injection_depth;
-        targetPrompt.injection_position = entryData.injection_position;
-        targetPrompt.forbid_overrides = entryData.forbid_overrides;
+        const originalIdentifier = toPresetData.prompts[targetPromptIndex].identifier;
+        const newPromptData = ensureNewVersionFields(entryData);
+
+        // Replace the old prompt object with the new one, preserving the identifier
+        toPresetData.prompts[targetPromptIndex] = {
+            ...newPromptData,
+            identifier: originalIdentifier,
+        };
 
         await apiInfo.presetManager.savePreset(toPreset, toPresetData);
 
@@ -1693,14 +2513,16 @@ function editEntryInPreset(apiInfo, presetName, entryData, entryName) {
 function editSelectedEntry(apiInfo, side) {
     const $ = getJQuery();
     const selectedEntries = getSelectedEntries(side);
-    let presetName, entries;
+    let presetName, entries, displayMode;
 
     if (side === 'single') {
         presetName = window.singlePresetName;
         entries = window.singleEntries;
+        displayMode = $('#single-display-mode').val();
     } else {
         presetName = $(`#${side}-preset`).val();
         entries = side === 'left' ? window.leftEntries : window.rightEntries;
+        displayMode = $(`#${side}-display-mode`).val();
     }
 
     if (selectedEntries.length !== 1) {
@@ -1716,7 +2538,7 @@ function editSelectedEntry(apiInfo, side) {
     const entry = selectedEntries[0];
     const entryIndex = entries.findIndex(e => e.name === entry.name && e.content === entry.content);
 
-    createEditEntryModal(apiInfo, presetName, entry, null, false, side, entryIndex);
+    createEditEntryModal(apiInfo, presetName, entry, null, false, side, entryIndex, displayMode);
 }
 
 async function deleteSelectedEntries(apiInfo, side) {
@@ -1773,6 +2595,7 @@ async function transferEntries(apiInfo, fromSide, toSide) {
     const selectedEntries = getSelectedEntries(fromSide);
     const fromPreset = $(`#${fromSide}-preset`).val();
     const toPreset = $(`#${toSide}-preset`).val();
+    const displayMode = $(`#${toSide}-display-mode`).val();
 
     if (selectedEntries.length === 0) {
         alert('请至少选择一个条目进行转移');
@@ -1795,7 +2618,7 @@ async function transferEntries(apiInfo, fromSide, toSide) {
 
         // 执行转移（插入到底部）
         const autoEnable = $('#auto-enable-entry').prop('checked');
-        await performTransfer(apiInfo, fromPreset, toPreset, selectedEntries, 'bottom', autoEnable);
+        await performTransfer(apiInfo, fromPreset, toPreset, selectedEntries, 'bottom', autoEnable, displayMode);
 
         let successMessage = `成功转移 ${selectedEntries.length} 个条目！`;
         alert(successMessage);
@@ -1840,20 +2663,30 @@ function displayTransferableEntries(entries) {
     if (!entriesList.length) { console.error('条目列表容器未找到'); return; }
 
     const { isMobile, isSmallScreen } = getDeviceInfo();
+    const isDark = isDarkTheme();
+
+    // 深色主题颜色变量
+    const entryBg = isDark ? '#2d2d2d' : '#ffffff';
+    const entryBorder = isDark ? '#4b5563' : '#e5e7eb';
+    const entryTextColor = isDark ? '#e0e0e0' : '#111827';
+    const entryDetailsColor = isDark ? '#9ca3af' : '#6b7280';
+    const emptyTextColor = isDark ? '#9ca3af' : '#6b7280';
+
     if (entries.length === 0) {
-        entriesList.html(`<div style="color: #6b7280; text-align: center; padding: ${isMobile ? '40px 20px' : '50px 20px'}; font-size: ${isMobile ? '16px' : '15px'}; font-weight: 500;"><div style="font-size: 64px; margin-bottom: 20px; opacity: 0.3;">📭</div><div>没有可转移的条目</div></div>`);
+        entriesList.html(`<div style="color: ${emptyTextColor}; text-align: center; padding: ${isMobile ? '40px 20px' : '50px 20px'}; font-size: ${isMobile ? '16px' : '15px'}; font-weight: 500;"><div style="font-size: 64px; margin-bottom: 20px; opacity: 0.3;">📭</div><div>没有可转移的条目</div></div>`);
         return;
     }
 
     const entriesHtml = entries.map((entry, index) => {
         const statusColor = entry.status === 'new' ? '#10b981' : entry.status === 'different' ? '#f59e0b' : '#6b7280';
-        const editButton = entry.showEditButton ? `<button class="entry-edit-btn" data-index="${index}" style="margin-left: 8px; padding: 6px 12px; background: #059669; color: white; border: none; border-radius: 6px; font-size: 12px; cursor: pointer; z-index: 10; position: relative;">✏️ 编辑</button>` : '';
+        const editButtonBg = isDark ? '#059669' : '#059669';
+        const editButton = entry.showEditButton ? `<button class="entry-edit-btn" data-index="${index}" style="margin-left: 8px; padding: 6px 12px; background: ${editButtonBg}; color: white; border: none; border-radius: 6px; font-size: 12px; cursor: pointer; z-index: 10; position: relative;">✏️ 编辑</button>` : '';
         return `
-            <div class="entry-item" data-index="${index}" style="border-color: #e5e7eb; background: #ffffff; transition: all 0.3s ease; cursor: pointer; position: relative; display: flex; align-items: ${isMobile ? 'flex-start' : 'center'}; padding: ${isSmallScreen ? '12px 10px' : isMobile ? '14px 12px' : '16px 18px'}; margin-bottom: ${isMobile ? '10px' : '10px'}; border: 1px solid #e5e7eb; border-radius: ${isMobile ? '12px' : '10px'}; ${isMobile ? 'min-height: 60px;' : 'min-height: 56px;'}">
+            <div class="entry-item" data-index="${index}" data-identifier="${entry.identifier}" style="border-color: ${entryBorder}; background: ${entryBg}; transition: all 0.3s ease; cursor: pointer; position: relative; display: flex; align-items: ${isMobile ? 'flex-start' : 'center'}; padding: ${isSmallScreen ? '12px 10px' : isMobile ? '14px 12px' : '16px 18px'}; margin-bottom: ${isMobile ? '10px' : '10px'}; border: 1px solid ${entryBorder}; border-radius: ${isMobile ? '12px' : '10px'}; ${isMobile ? 'min-height: 60px;' : 'min-height: 56px;'}">
                 <input type="checkbox" class="entry-checkbox" data-status="${entry.status}" style="margin-right: ${isMobile ? '12px' : '14px'}; ${isMobile ? 'margin-top: 4px;' : ''} width: ${isMobile ? '18px' : '18px'}; height: ${isMobile ? '18px' : '18px'}; accent-color: ${statusColor}; cursor: pointer; position: relative; z-index: 10;">
                 <div style="flex: 1; ${isMobile ? 'min-width: 0;' : ''}">
-                    <div class="entry-name" style="font-weight: 600; color: #111827; font-size: ${isSmallScreen ? '13px' : isMobile ? '14px' : '15px'}; margin-bottom: ${isMobile ? '4px' : '4px'}; word-break: break-word; line-height: 1.3;">${entry.name}</div>
-                    <div class="entry-details" style="font-size: ${isSmallScreen ? '11px' : isMobile ? '12px' : '12px'}; color: #6b7280; line-height: 1.4; ${isMobile ? 'display: flex; flex-direction: column; gap: 2px;' : ''}">
+                    <div class="entry-name" style="font-weight: 600; color: ${entryTextColor}; font-size: ${isSmallScreen ? '13px' : isMobile ? '14px' : '15px'}; margin-bottom: ${isMobile ? '4px' : '4px'}; word-break: break-word; line-height: 1.3;">${entry.name}</div>
+                    <div class="entry-details" style="font-size: ${isSmallScreen ? '11px' : isMobile ? '12px' : '12px'}; color: ${entryDetailsColor}; line-height: 1.4; ${isMobile ? 'display: flex; flex-direction: column; gap: 2px;' : ''}">
                         <div class="status-info" style="display: inline-flex; align-items: center; gap: 6px;">
                             <span style="font-size: ${isMobile ? '13px' : '14px'};">${entry.statusIcon}</span>
                             <span style="color: ${statusColor}; font-weight: 500; padding: 2px 6px; background: ${statusColor}20; border-radius: 4px; font-size: ${isSmallScreen ? '10px' : isMobile ? '11px' : '12px'};">${entry.statusText}</span>
@@ -1895,11 +2728,11 @@ function displayTransferableEntries(entries) {
     }, 50);
 }
 
-function updateInsertPositionOptions(targetPreset) {
+function updateInsertPositionOptions(targetPreset, displayMode = 'default') {
     const $ = getJQuery();
     const insertSelect = $('#insert-position');
     insertSelect.empty().append('<option value="" disabled selected>请选择插入位置...</option><option value="top">插入到顶部</option><option value="bottom">插入到底部</option>');
-    const targetOrderList = getTargetEnabledPromptsList(targetPreset);
+    const targetOrderList = getTargetPromptsList(targetPreset, displayMode);
     if (targetOrderList.length > 0) {
         insertSelect.append('<option disabled>──────────</option>');
         targetOrderList.forEach((entry, index) => insertSelect.append(`<option value="after-${index}">插入到 "${entry.name}" 之后</option>`));
@@ -1907,21 +2740,44 @@ function updateInsertPositionOptions(targetPreset) {
     insertSelect.trigger('change');
 }
 
-function getTargetEnabledPromptsList(targetPreset) {
+function getTargetPromptsList(targetPreset, displayMode = 'default') {
     try {
         const apiInfo = getCurrentApiInfo();
         if (!apiInfo) return [];
-        const targetData = getPresetDataFromManager(apiInfo, targetPreset);
-        if (!targetData) return [];
+        const presetData = getPresetDataFromManager(apiInfo, targetPreset);
+        if (!presetData) return [];
+
+        if (!presetData.prompts || !Array.isArray(presetData.prompts)) {
+            return [];
+        }
+
         const dummyCharacterId = 100001;
-        const characterPromptOrder = targetData.prompt_order?.find(order => order.character_id === dummyCharacterId);
-        if (!characterPromptOrder) return [];
-        return characterPromptOrder.order
-            .filter(orderEntry => orderEntry.enabled)
-            .map(orderEntry => targetData.prompts?.find(p => p.identifier === orderEntry.identifier))
-            .filter(prompt => prompt && !prompt.system_prompt && !prompt.marker);
+        const characterPromptOrder = presetData.prompt_order?.find(order => order.character_id === dummyCharacterId);
+
+        if (displayMode === 'all') {
+            return getPromptEntries(presetData);
+        }
+
+        if (!characterPromptOrder) {
+            return getPromptEntries(presetData);
+        }
+
+        const orderedEntries = [];
+        const promptMap = new Map(presetData.prompts.map(p => [p.identifier, p]));
+
+        characterPromptOrder.order.forEach(orderEntry => {
+            const prompt = promptMap.get(orderEntry.identifier);
+            if (prompt && !prompt.system_prompt && !prompt.marker && prompt.name && prompt.name.trim() !== '') {
+                if (displayMode === 'default' && !orderEntry.enabled) {
+                    return; // Skip disabled
+                }
+                orderedEntries.push(prompt);
+            }
+        });
+        return orderedEntries;
+
     } catch (error) {
-        console.error('获取目标启用提示词列表失败:', error);
+        console.error('获取目标提示词列表失败:', error);
         return [];
     }
 }
@@ -2006,7 +2862,7 @@ async function executeDelete(apiInfo) {
 
 // 旧的编辑函数已被移除，避免重复定义
 
-function createEditEntryModal(apiInfo, presetName, entry, insertPosition = null, autoEnable = false, side = null) {
+function createEditEntryModal(apiInfo, presetName, entry, insertPosition = null, autoEnable = false, side = null, entryIndex = null, displayMode = 'default') {
     const $ = getJQuery();
     const { isMobile, isSmallScreen, isPortrait } = getDeviceInfo();
 
@@ -2016,8 +2872,13 @@ function createEditEntryModal(apiInfo, presetName, entry, insertPosition = null,
     const isNewEntry = entry.isNewEntry || false;
     const modalTitle = isNewEntry ? '新建条目' : '编辑条目';
     const modalIcon = isNewEntry ? '✨' : '✏️';
+    const isDark = isDarkTheme();
+    const tipColor = isDark ? '#9ca3af' : '#6b7280';
 
-    const currentPosition = entry.injection_position;
+    // 如果是新建条目，使用默认值；如果是编辑，使用现有值
+    const entryData = isNewEntry ? createEntryWithNewFields({name: '新提示词'}) : ensureNewVersionFields(entry);
+
+    const currentPosition = entryData.injection_position;
     // 使用宽松比较处理 '1' (字符串) 和 1 (数字) 的情况，并处理 null/undefined/空字符串
     const isRelative = currentPosition == 'relative' || currentPosition == null || currentPosition === '';
     const isChat = currentPosition == '1' || currentPosition == 'absolute';
@@ -2036,22 +2897,25 @@ function createEditEntryModal(apiInfo, presetName, entry, insertPosition = null,
                         <h2>${modalTitle}</h2>
                     </div>
                     <div class="preset-info">预设: ${presetName}</div>
+                    <div class="edit-tip" style="margin-top: 8px; font-size: ${isMobile ? '12px' : '11px'}; color: ${tipColor}; text-align: center; opacity: 0.8;">
+                        💡 提示：只能通过点击"取消"按钮关闭此界面，避免误触
+                    </div>
                 </div>
                 <div class="edit-form">
                     <div class="form-field">
                         <label for="edit-entry-name">
                             <span>📝 条目名称</span>
                         </label>
-                        <input type="text" id="edit-entry-name" value="${entry.name || ''}" placeholder="输入条目名称...">
+                        <input type="text" id="edit-entry-name" value="${entryData.name}" placeholder="输入条目名称...">
                     </div>
                     <div class="form-field">
                         <label for="edit-entry-role">
                             <span>👤 角色</span>
                         </label>
                         <select id="edit-entry-role">
-                            <option value="system" ${entry.role === 'system' ? 'selected' : ''}>系统</option>
-                            <option value="user" ${entry.role === 'user' ? 'selected' : ''}>用户</option>
-                            <option value="assistant" ${entry.role === 'assistant' ? 'selected' : ''}>AI助手</option>
+                            <option value="system" ${entryData.role === 'system' ? 'selected' : ''}>系统</option>
+                            <option value="user" ${entryData.role === 'user' ? 'selected' : ''}>用户</option>
+                            <option value="assistant" ${entryData.role === 'assistant' ? 'selected' : ''}>AI助手</option>
                         </select>
                     </div>
                     <div class="form-field">
@@ -2066,13 +2930,32 @@ function createEditEntryModal(apiInfo, presetName, entry, insertPosition = null,
                         <label for="edit-entry-depth">
                             <span>🔢 注入深度</span>
                         </label>
-                        <input type="number" id="edit-entry-depth" value="${entry.injection_depth ?? 4}" min="0" max="100">
+                        <input type="number" id="edit-entry-depth" value="${entryData.injection_depth}" min="0" max="100">
                     </div>
                     <div class="form-field">
                         <label for="edit-entry-content">
                             <span>📄 内容</span>
                         </label>
-                        <textarea id="edit-entry-content" rows="8" placeholder="输入条目内容...">${entry.content || ''}</textarea>
+                        <textarea id="edit-entry-content" rows="8" placeholder="输入条目内容...">${entryData.content}</textarea>
+                    </div>
+                    <div class="form-field">
+                        <label for="edit-entry-order">
+                            <span>#️⃣ 注入顺序</span>
+                        </label>
+                        <input type="number" id="edit-entry-order" value="${entryData.injection_order}">
+                    </div>
+                    <div class="form-field">
+                        <label>
+                            <span>⚡️ 触发条件 (不选则为总是触发)</span>
+                        </label>
+                        <div id="edit-entry-triggers" class="trigger-container">
+                            ${TRIGGER_TYPES.map(trigger => `
+                                <label class="trigger-label">
+                                    <input type="checkbox" class="trigger-checkbox" value="${trigger}" ${entryData.injection_trigger.includes(trigger) ? 'checked' : ''}>
+                                    <span>${TRIGGER_TYPE_LABELS[trigger] || trigger}</span>
+                                </label>
+                            `).join('')}
+                        </div>
                     </div>
                 </div>
                 <div class="edit-modal-actions">
@@ -2084,11 +2967,19 @@ function createEditEntryModal(apiInfo, presetName, entry, insertPosition = null,
     `;
 
     $('body').append(modalHtml);
+    $('#edit-entry-modal').data({apiInfo, presetName, entry, insertPosition, autoEnable, side, displayMode});
     applyEditModalStyles(isMobile, isSmallScreen, isPortrait);
-    bindEditModalEvents(apiInfo, presetName, entry, insertPosition, autoEnable, side);
+    bindEditModalEvents(apiInfo, presetName, entry, insertPosition, autoEnable, side, displayMode);
 }
 
 function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
+    const isDark = isDarkTheme();
+    const bgColor = isDark ? '#1a1a1a' : '#ffffff';
+    const textColor = isDark ? '#e0e0e0' : '#374151';
+    const borderColor = isDark ? '#374151' : '#e5e7eb';
+    const inputBg = isDark ? '#222222' : '#ffffff';
+    const inputBorder = isDark ? '#4b5563' : '#d1d5db';
+
     const styles = `
         #edit-entry-modal {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
@@ -2096,21 +2987,22 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
             z-index: 10001; display: flex; align-items: ${isMobile ? 'flex-start' : 'center'};
             justify-content: center; padding: ${isMobile ? '10px' : '20px'};
             ${isMobile ? 'padding-top: 20px;' : ''}
-            overflow-y: auto; -webkit-overflow-scrolling: touch; animation: fadeIn 0.3s ease-out;
+            overflow-y: auto; -webkit-overflow-scrolling: touch; animation: pt-fadeIn 0.3s ease-out;
         }
         #edit-entry-modal .edit-modal-content {
-            background: #ffffff; border-radius: ${isMobile ? '16px' : '20px'};
+            background: ${bgColor}; border-radius: ${isMobile ? '16px' : '20px'};
             padding: ${isSmallScreen ? '24px' : isMobile ? '28px' : '32px'};
             max-width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '600px'};
             width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '90%'};
             max-height: ${isMobile ? '90vh' : '85vh'};
-            overflow-y: auto; color: #374151; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow-y: auto; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
             ${isMobile ? '-webkit-overflow-scrolling: touch;' : ''}
-            animation: slideUp 0.3s ease-out;
+            animation: pt-slideUp 0.3s ease-out;
+            transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
         }
         #edit-entry-modal .edit-modal-header {
             text-align: center; margin-bottom: ${isMobile ? '24px' : '28px'};
-            padding-bottom: ${isMobile ? '18px' : '22px'}; border-bottom: 1px solid #e5e7eb;
+            padding-bottom: ${isMobile ? '18px' : '22px'}; border-bottom: 1px solid ${borderColor};
         }
         #edit-entry-modal .edit-modal-header > div:first-child {
             display: flex; align-items: center; justify-content: center;
@@ -2119,11 +3011,11 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
         #edit-entry-modal .edit-modal-header span { font-size: ${isSmallScreen ? '28px' : isMobile ? '32px' : '36px'}; }
         #edit-entry-modal .edit-modal-header h2 {
             margin: 0; font-size: ${isSmallScreen ? '22px' : isMobile ? '24px' : '28px'};
-            font-weight: 700; color: #111827; letter-spacing: -0.5px;
+            font-weight: 700; color: ${isDark ? '#f3f4f6' : '#111827'}; letter-spacing: -0.5px;
         }
         #edit-entry-modal .preset-info {
             margin-top: 8px; font-size: ${isMobile ? '14px' : '13px'};
-            color: #6b7280; font-weight: 500;
+            color: ${isDark ? '#9ca3af' : '#6b7280'}; font-weight: 500;
         }
         #edit-entry-modal .edit-form {
             display: flex; flex-direction: column; gap: ${isMobile ? '20px' : '18px'};
@@ -2133,22 +3025,76 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
         }
         #edit-entry-modal .form-field label {
             margin-bottom: 8px; font-weight: 600; font-size: ${isMobile ? '16px' : '15px'};
-            color: #374151; display: flex; align-items: center; gap: 8px;
+            color: ${textColor}; display: flex; align-items: center; gap: 8px;
         }
         #edit-entry-modal .form-field input, #edit-entry-modal .form-field select, #edit-entry-modal .form-field textarea {
             padding: ${isMobile ? '14px 16px' : '12px 14px'};
-            background: #ffffff; color: #374151; border: 1px solid #d1d5db;
+            background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder};
             border-radius: 8px; font-size: ${isMobile ? '15px' : '14px'}; font-weight: 400;
             transition: all 0.3s ease; box-sizing: border-box;
         }
         #edit-entry-modal .form-field select {
-            appearance: none; background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 5"><path fill="%236b7280" d="M2 0L0 2h4zm0 5L0 3h4z"/></svg>');
+            appearance: none; background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 5"><path fill="${isDark ? '%23e0e0e0' : '%236b7280'}" d="M2 0L0 2h4zm0 5L0 3h4z"/></svg>');
             background-repeat: no-repeat; background-position: right 16px center;
             background-size: 12px; padding-right: 45px; cursor: pointer;
         }
         #edit-entry-modal .form-field textarea {
             resize: vertical; min-height: 120px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
             line-height: 1.5;
+        }
+        #edit-entry-modal .trigger-container {
+            display: flex; flex-wrap: wrap; gap: 10px; background: ${inputBg};
+            padding: 10px; border-radius: 8px; border: 1px solid ${inputBorder};
+        }
+        #edit-entry-modal .trigger-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+            background-color: ${isDark ? '#374151' : '#f3f4f6'};
+        }
+        #edit-entry-modal .trigger-label:hover {
+            background-color: ${isDark ? '#4b5563' : '#e5e7eb'};
+        }
+        #edit-entry-modal .trigger-label input[type="checkbox"] {
+            display: none;
+        }
+        #edit-entry-modal .trigger-label span {
+            position: relative;
+            padding-left: 25px;
+            font-size: 14px;
+            color: ${textColor};
+        }
+        #edit-entry-modal .trigger-label span::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 18px;
+            height: 18px;
+            border: 2px solid ${isDark ? '#6b7280' : '#d1d5db'};
+            border-radius: 4px;
+            background-color: ${inputBg};
+            transition: all 0.2s ease;
+        }
+        #edit-entry-modal .trigger-label input[type="checkbox"]:checked + span::before {
+            background-color: #3b82f6;
+            border-color: #3b82f6;
+        }
+        #edit-entry-modal .trigger-label input[type="checkbox"]:checked + span::after {
+            content: '';
+            position: absolute;
+            left: 6px;
+            top: 50%;
+            width: 6px;
+            height: 10px;
+            border: solid white;
+            border-width: 0 2px 2px 0;
+            transform: translateY(-50%) rotate(45%);
         }
         #edit-entry-modal .edit-modal-actions {
             display: flex; justify-content: center; gap: ${isMobile ? '12px' : '16px'};
@@ -2169,7 +3115,7 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
     }
 }
 
-function bindEditModalEvents(apiInfo, presetName, originalEntry, insertPosition = null, autoEnable = false, side = null) {
+function bindEditModalEvents(apiInfo, presetName, originalEntry, insertPosition = null, autoEnable = false, side = null, displayMode = 'default') {
     const $ = getJQuery();
     const modal = $('#edit-entry-modal');
     const isNewEntry = originalEntry.isNewEntry || false;
@@ -2194,7 +3140,8 @@ function bindEditModalEvents(apiInfo, presetName, originalEntry, insertPosition 
                 name: $('#edit-entry-name').val().trim(),
                 role: $('#edit-entry-role').val(),
                 content: $('#edit-entry-content').val(),
-                // injection_position and injection_depth are set below
+                injection_order: parseInt($('#edit-entry-order').val(), 10) || 100,
+                injection_trigger: $('#edit-entry-triggers .trigger-checkbox:checked').map(function() { return $(this).val(); }).get(),
             };
 
             if (positionValue === 'relative') {
@@ -2218,7 +3165,7 @@ function bindEditModalEvents(apiInfo, presetName, originalEntry, insertPosition 
             if (isNewEntry) {
                 // 新建条目，使用指定的插入位置
                 const actualInsertPosition = insertPosition || 'bottom';
-                await performInsertNewEntry(apiInfo, presetName, updatedEntry, actualInsertPosition, autoEnable);
+                await performInsertNewEntry(apiInfo, presetName, updatedEntry, actualInsertPosition, autoEnable, displayMode);
                 let successMessage = `成功创建新条目 "${updatedEntry.name}"！`;
                 alert(successMessage);
 
@@ -2252,20 +3199,47 @@ function bindEditModalEvents(apiInfo, presetName, originalEntry, insertPosition 
         }
     });
 
-    $('#cancel-edit').on('click', () => modal.remove());
+    // 数据清理函数
+    function clearEditFormData() {
+        // 清空所有输入框的数据
+        $('#edit-entry-name').val('');
+        $('#edit-entry-role').val('system');
+        $('#edit-entry-content').val('');
+        $('#edit-entry-position').val('relative');
+        $('#edit-entry-depth').val('4');
 
-    // 点击背景关闭模态框
-    modal.on('click', e => {
-        if (e.target === modal[0]) modal.remove();
-    });
-
-    // ESC键关闭模态框
-    $(document).on('keydown.edit-entry', e => {
-        if (e.key === 'Escape') {
-            modal.remove();
-            $(document).off('keydown.edit-entry');
+        // 清除任何可能的临时存储
+        if (window.editEntryTempData) {
+            delete window.editEntryTempData;
         }
+
+        console.log('编辑表单数据已清理');
+    }
+
+    $('#cancel-edit').on('click', () => {
+        clearEditFormData();
+        modal.remove();
     });
+
+    // 移除点击背景关闭功能，避免误触
+    // modal.on('click', e => {
+    //     if (e.target === modal[0]) {
+    //         clearEditFormData();
+    //         modal.remove();
+    //     }
+    // });
+
+    // 移除ESC键关闭功能，避免误触
+    // $(document).on('keydown.edit-entry', e => {
+    //     if (e.key === 'Escape') {
+    //         clearEditFormData();
+    //         modal.remove();
+    //         $(document).off('keydown.edit-entry');
+    //     }
+    // });
+
+    // 添加提示信息，告知用户只能通过取消按钮关闭
+    console.log('编辑/新建界面已打开，只能通过点击"取消"按钮关闭，避免误触');
 
     // 移动端处理
     if (getDeviceInfo().isMobile) {
@@ -2311,7 +3285,9 @@ async function saveEntryChanges(apiInfo, presetName, originalEntry, updatedEntry
             role: updatedEntry.role,
             content: updatedEntry.content,
             injection_depth: updatedEntry.injection_depth,
-            injection_position: updatedEntry.injection_position
+            injection_position: updatedEntry.injection_position,
+            injection_order: updatedEntry.injection_order,
+            injection_trigger: updatedEntry.injection_trigger,
         };
 
         // 保存预设
@@ -2338,36 +3314,31 @@ async function switchToPreset(apiInfo, presetName) {
     }
 }
 
-async function performInsertNewEntry(apiInfo, targetPreset, newEntry, insertPosition, autoEnable) {
+async function performInsertNewEntry(apiInfo, targetPreset, newEntry, insertPosition, autoEnable, displayMode = 'default') {
     const targetData = getPresetDataFromManager(apiInfo, targetPreset);
     if (!targetData) throw new Error('无法获取目标预设数据');
 
     if (!targetData.prompts) targetData.prompts = [];
     const characterPromptOrder = getOrCreateDummyCharacterPromptOrder(targetData);
 
-    const newIdentifier = generateUUID();
+    // The newEntry object from the modal already has all the correct fields.
+    // We just need to assign a new identifier and clean up the temporary flag.
     const newPrompt = {
-        identifier: newIdentifier,
-        name: newEntry.name,
-        role: newEntry.role || 'system',
-        content: newEntry.content || '',
-        system_prompt: false,
-        marker: false,
-        injection_depth: newEntry.injection_depth ?? 4,
-        injection_position: newEntry.injection_position ?? null,
-        forbid_overrides: newEntry.forbid_overrides || false
+        ...newEntry,
+        identifier: generateUUID(),
     };
+    delete newPrompt.isNewEntry;
 
     targetData.prompts.push(newPrompt);
-    const newOrderEntry = { identifier: newIdentifier, enabled: autoEnable };
+    const newOrderEntry = { identifier: newPrompt.identifier, enabled: autoEnable };
 
     if (insertPosition === 'top') {
         characterPromptOrder.order.unshift(newOrderEntry);
     } else if (insertPosition.startsWith('after-')) {
         const afterIndex = parseInt(insertPosition.replace('after-', ''));
-        const enabledUserPrompts = getTargetEnabledPromptsList(targetPreset);
-        if (afterIndex >= 0 && afterIndex < enabledUserPrompts.length) {
-            const targetPrompt = enabledUserPrompts[afterIndex];
+        const referencePromptList = getTargetPromptsList(targetPreset, displayMode);
+        if (afterIndex >= 0 && afterIndex < referencePromptList.length) {
+            const targetPrompt = referencePromptList[afterIndex];
             const orderIndex = characterPromptOrder.order.findIndex(e => e.identifier === targetPrompt.identifier);
             if (orderIndex !== -1) {
                 characterPromptOrder.order.splice(orderIndex + 1, 0, newOrderEntry);
@@ -2385,7 +3356,7 @@ async function performInsertNewEntry(apiInfo, targetPreset, newEntry, insertPosi
     console.log(`新条目 "${newEntry.name}" 已成功插入到预设 "${targetPreset}"`);
 }
 
-async function performTransfer(apiInfo, sourcePreset, targetPreset, selectedEntries, insertPosition, autoEnable) {
+async function performTransfer(apiInfo, sourcePreset, targetPreset, selectedEntries, insertPosition, autoEnable, displayMode = 'default') {
     const sourceData = getPresetDataFromManager(apiInfo, sourcePreset);
     const targetData = getPresetDataFromManager(apiInfo, targetPreset);
     if (!sourceData || !targetData) throw new Error('无法获取预设数据');
@@ -2396,13 +3367,13 @@ async function performTransfer(apiInfo, sourcePreset, targetPreset, selectedEntr
     const targetPromptMap = new Map(targetData.prompts.map((p, i) => [p.name, i]));
     const newOrderEntries = []; // 收集新的order条目
 
-    selectedEntries.forEach(entry => {
+    const entriesToTransfer = batchTransferWithNewFields(selectedEntries);
+
+    entriesToTransfer.forEach(entry => {
         if (targetPromptMap.has(entry.name)) {
             const existingIndex = targetPromptMap.get(entry.name);
             const existingPrompt = targetData.prompts[existingIndex];
-            // Preserve the injection position type, default null/undefined to null
-            const position = entry.injection_position ?? null;
-            targetData.prompts[existingIndex] = { ...existingPrompt, name: entry.name, role: entry.role || 'system', content: entry.content || '', injection_depth: entry.injection_depth ?? 4, injection_position: position, forbid_overrides: entry.forbid_overrides || false };
+            targetData.prompts[existingIndex] = { ...existingPrompt, ...entry };
             const existingOrderEntry = characterPromptOrder.order.find(o => o.identifier === existingPrompt.identifier);
             if (existingOrderEntry) {
                 existingOrderEntry.enabled = autoEnable;
@@ -2410,12 +3381,9 @@ async function performTransfer(apiInfo, sourcePreset, targetPreset, selectedEntr
                 characterPromptOrder.order.push({ identifier: existingPrompt.identifier, enabled: autoEnable });
             }
         } else {
-            const newIdentifier = generateUUID();
-            // Preserve the injection position type, default null/undefined to null
-            const position = entry.injection_position ?? null;
-            const newPrompt = { identifier: newIdentifier, name: entry.name, role: entry.role || 'system', content: entry.content || '', system_prompt: false, marker: false, injection_depth: entry.injection_depth ?? 4, injection_position: position, forbid_overrides: entry.forbid_overrides || false };
+            const newPrompt = { ...entry, identifier: generateUUID() };
             targetData.prompts.push(newPrompt);
-            const newOrderEntry = { identifier: newIdentifier, enabled: autoEnable };
+            const newOrderEntry = { identifier: newPrompt.identifier, enabled: autoEnable };
             newOrderEntries.push(newOrderEntry);
         }
     });
@@ -2427,9 +3395,9 @@ async function performTransfer(apiInfo, sourcePreset, targetPreset, selectedEntr
             characterPromptOrder.order.unshift(...newOrderEntries);
         } else if (insertPosition.startsWith('after-')) {
             const afterIndex = parseInt(insertPosition.replace('after-', ''));
-            const enabledUserPrompts = getTargetEnabledPromptsList(targetPreset);
-            if (afterIndex >= 0 && afterIndex < enabledUserPrompts.length) {
-                const targetPrompt = enabledUserPrompts[afterIndex];
+            const referencePromptList = getTargetPromptsList(targetPreset, displayMode);
+            if (afterIndex >= 0 && afterIndex < referencePromptList.length) {
+                const targetPrompt = referencePromptList[afterIndex];
                 const orderIndex = characterPromptOrder.order.findIndex(e => e.identifier === targetPrompt.identifier);
                 if (orderIndex !== -1) {
                     characterPromptOrder.order.splice(orderIndex + 1, 0, ...newOrderEntries);
@@ -2523,21 +3491,135 @@ function initPresetTransferIntegration() {
         if (!$('#preset-transfer-global-styles').length) {
             $('head').append(`
                 <style id="preset-transfer-global-styles">
-                    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-                    @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+                    @keyframes pt-fadeIn {
+                        from { opacity: 0; }
+                        to { opacity: 1; }
+                    }
+                    @keyframes pt-slideUp {
+                        from { opacity: 0; transform: translateY(20px) scale(0.95); }
+                        to { opacity: 1; transform: translateY(0) scale(1); }
+                    }
+                    @keyframes pt-pulse {
+                        0%, 100% { transform: scale(1); }
+                        50% { transform: scale(1.05); }
+                    }
+                    @keyframes pt-shake {
+                        0%, 100% { transform: translateX(0); }
+                        25% { transform: translateX(-5px); }
+                        75% { transform: translateX(5px); }
+                    }
+
+                    /* 滚动条样式 - 使用CSS变量，由主题动态设置 */
                     #preset-transfer-modal .entries-list::-webkit-scrollbar { width: 8px; }
-                    #preset-transfer-modal .entries-list::-webkit-scrollbar-track { background: #f3f4f6; border-radius: 4px; }
-                    #preset-transfer-modal .entries-list::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
-                    #preset-transfer-modal .entries-list::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
-                    #preset-transfer-modal .entry-item:hover { border-color: #9ca3af !important; box-shadow: 0 2px 4px rgba(0,0,0,0.05) !important; }
-                    #preset-transfer-modal #entry-search:focus, #preset-transfer-modal select:focus { border-color: #6b7280 !important; box-shadow: 0 0 0 3px rgba(107, 114, 128, 0.1) !important; outline: none !important; }
-                    #preset-transfer-modal button:not(:disabled):hover { opacity: 0.9; }
-                    #preset-transfer-modal button:disabled { opacity: 0.5 !important; cursor: not-allowed !important; }
-                    #edit-entry-modal input:focus, #edit-entry-modal select:focus, #edit-entry-modal textarea:focus { border-color: #059669 !important; box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1) !important; outline: none !important; }
-                    #edit-entry-modal button:not(:disabled):hover { opacity: 0.9; }
-                    #edit-entry-modal button:disabled { opacity: 0.5 !important; cursor: not-allowed !important; }
-                    .entry-edit-btn:hover { opacity: 0.8 !important; transform: scale(1.05); }
-                    .entry-edit-btn:active { transform: scale(0.95); }
+                    #preset-transfer-modal .entries-list::-webkit-scrollbar-track {
+                        background: var(--pt-scrollbar-track-color, #f3f4f6); border-radius: 4px;
+                    }
+                    #preset-transfer-modal .entries-list::-webkit-scrollbar-thumb {
+                        background: var(--pt-scrollbar-thumb-color, #d1d5db); border-radius: 4px;
+                        transition: background 0.3s ease;
+                    }
+                    #preset-transfer-modal .entries-list::-webkit-scrollbar-thumb:hover {
+                        background: var(--pt-scrollbar-thumb-hover-color, #9ca3af);
+                    }
+
+                    /* 条目悬停效果 */
+                    #preset-transfer-modal .entry-item {
+                        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+                    }
+                    #preset-transfer-modal .entry-item:hover {
+                        border-color: var(--pt-entry-hover-border, #9ca3af) !important;
+                        box-shadow: 0 4px 12px var(--pt-entry-hover-shadow, rgba(0,0,0,0.1)) !important;
+                        transform: translateY(-2px) !important;
+                    }
+                    #preset-transfer-modal .entry-item:active {
+                        transform: translateY(0) !important;
+                        box-shadow: 0 2px 6px var(--pt-entry-active-shadow, rgba(0,0,0,0.05)) !important;
+                    }
+
+                    /* 按钮通用样式 */
+                    #preset-transfer-modal button {
+                        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+                        border-radius: 8px !important;
+                    }
+                    #preset-transfer-modal button:not(.theme-toggle-btn):not(.jump-btn):not(:disabled):hover {
+                        transform: translateY(-1px) !important;
+                        box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
+                    }
+                    #preset-transfer-modal button:not(.theme-toggle-btn):not(:disabled):active {
+                        transform: translateY(0) !important;
+                        box-shadow: 0 2px 6px rgba(0,0,0,0.1) !important;
+                    }
+                    #preset-transfer-modal button:disabled {
+                        opacity: 0.5 !important;
+                        cursor: not-allowed !important;
+                        transform: none !important;
+                    }
+
+                    /* 输入框焦点效果 */
+                    #preset-transfer-modal input:focus,
+                    #preset-transfer-modal select:focus,
+                    #preset-transfer-modal textarea:focus {
+                        border-color: var(--pt-input-focus-border, #6b7280) !important;
+                        box-shadow: 0 0 0 3px var(--pt-input-focus-shadow, rgba(107, 114, 128, 0.1)) !important;
+                        outline: none !important;
+                        transform: scale(1.02) !important;
+                        transition: all 0.3s ease !important;
+                    }
+
+                    /* 编辑模态框样式 */
+                    #edit-entry-modal input:focus,
+                    #edit-entry-modal select:focus,
+                    #edit-entry-modal textarea:focus {
+                        border-color: #059669 !important;
+                        box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1) !important;
+                        outline: none !important;
+                        transform: scale(1.02) !important;
+                    }
+                    #edit-entry-modal button:not(:disabled):hover {
+                        transform: translateY(-1px) !important;
+                        box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
+                    }
+                    #edit-entry-modal button:disabled {
+                        opacity: 0.5 !important;
+                        cursor: not-allowed !important;
+                    }
+
+                    /* 编辑按钮特殊效果 */
+                    .entry-edit-btn {
+                        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+                    }
+                    .entry-edit-btn:hover {
+                        opacity: 0.9 !important;
+                        transform: scale(1.05) translateY(-1px) !important;
+                        box-shadow: 0 4px 8px rgba(5, 150, 105, 0.3) !important;
+                    }
+                    .entry-edit-btn:active {
+                        transform: scale(0.98) !important;
+                    }
+
+                    /* 移动端触摸优化 */
+                    @media (max-width: 768px) {
+                        #preset-transfer-modal button {
+                            min-height: 44px !important;
+                        }
+                        #preset-transfer-modal .entry-item {
+                            min-height: 44px !important;
+                        }
+                        #preset-transfer-modal input,
+                        #preset-transfer-modal select {
+                            min-height: 44px !important;
+                        }
+                    }
+
+                    /* 加载动画 */
+                    .loading-pulse {
+                        animation: pt-pulse 1.5s ease-in-out infinite;
+                    }
+
+                    /* 错误动画 */
+                    .error-shake {
+                        animation: pt-shake 0.5s ease-in-out;
+                    }
                 </style>
             `);
         }
