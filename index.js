@@ -1,6 +1,6 @@
 // @ts-nocheck
 // Author: discord千秋梦
-// Version: v1.1
+// Version: v1.2
 
 function getSillyTavernContext() {
     if (window.parent && window.parent.SillyTavern) {
@@ -743,7 +743,7 @@ function createTransferUI() {
                         <h2>预设条目转移工具</h2>
                     </div>
                     <div class="version-info">
-                        <span class="author">V1.1 by discord千秋梦</span>
+                        <span class="author">V1.2 by discord千秋梦</span>
                     </div>
                 </div>
                 <div class="preset-selection">
