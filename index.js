@@ -264,138 +264,9 @@ function toggleNewEntries(apiInfo, side) {
     }
 }
 
-function calculateStringSimilarity(str1, str2) {
-    // 计算两个字符串的相似度（使用多种算法组合）
-    if (!str1 || !str2) return 0;
 
-    const s1 = str1.toLowerCase().trim();
-    const s2 = str2.toLowerCase().trim();
 
-    if (s1 === s2) return 1;
 
-    // 1. 包含关系检查（权重较高）
-    if (s1.includes(s2) || s2.includes(s1)) {
-        const shorter = s1.length < s2.length ? s1 : s2;
-        const longer = s1.length >= s2.length ? s1 : s2;
-        return 0.8 + (shorter.length / longer.length) * 0.2; // 0.8-1.0
-    }
-
-    // 2. 关键词匹配
-    const keywords1 = s1.split(/[\s\-_]+/).filter(w => w.length > 0);
-    const keywords2 = s2.split(/[\s\-_]+/).filter(w => w.length > 0);
-
-    let keywordMatches = 0;
-    for (const kw1 of keywords1) {
-        for (const kw2 of keywords2) {
-            if (kw1 === kw2 || kw1.includes(kw2) || kw2.includes(kw1)) {
-                keywordMatches++;
-                break;
-            }
-        }
-    }
-
-    const keywordSimilarity = keywordMatches / Math.max(keywords1.length, keywords2.length);
-    if (keywordSimilarity > 0.5) {
-        return 0.6 + keywordSimilarity * 0.3; // 0.6-0.9
-    }
-
-    // 3. 编辑距离算法（用于细微差异）
-    const len1 = s1.length;
-    const len2 = s2.length;
-
-    if (len1 === 0) return len2 === 0 ? 1 : 0;
-    if (len2 === 0) return 0;
-
-    // 创建距离矩阵
-    const matrix = Array(len1 + 1).fill().map(() => Array(len2 + 1).fill(0));
-
-    // 初始化第一行和第一列
-    for (let i = 0; i <= len1; i++) matrix[i][0] = i;
-    for (let j = 0; j <= len2; j++) matrix[0][j] = j;
-
-    // 填充矩阵
-    for (let i = 1; i <= len1; i++) {
-        for (let j = 1; j <= len2; j++) {
-            const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
-            matrix[i][j] = Math.min(
-                matrix[i - 1][j] + 1,      // 删除
-                matrix[i][j - 1] + 1,      // 插入
-                matrix[i - 1][j - 1] + cost // 替换
-            );
-        }
-    }
-
-    const maxLen = Math.max(len1, len2);
-    const editSimilarity = (maxLen - matrix[len1][len2]) / maxLen;
-
-    return editSimilarity;
-}
-
-function findBestInsertPosition(selectedEntries, targetEntries) {
-    // 为每个选中的条目找到最佳插入位置
-    const results = [];
-
-    for (const selectedEntry of selectedEntries) {
-        let bestMatch = null;
-        let bestSimilarity = 0;
-        let bestPosition = 'bottom'; // 默认插入到底部
-        let bestIndex = -1;
-
-        console.log(`\n分析条目: "${selectedEntry.name}"`);
-
-        // 检查与目标条目的相似度
-        for (let i = 0; i < targetEntries.length; i++) {
-            const targetEntry = targetEntries[i];
-            const similarity = calculateStringSimilarity(selectedEntry.name, targetEntry.name);
-
-            console.log(`  与 "${targetEntry.name}" 的相似度: ${Math.round(similarity * 100)}%`);
-
-            // 降低阈值到0.2，并优先选择相似度最高的
-            if (similarity > bestSimilarity && similarity > 0.2) {
-                bestSimilarity = similarity;
-                bestMatch = targetEntry;
-                bestPosition = `after-${i}`;
-                bestIndex = i;
-            }
-        }
-
-        // 如果没有找到相似的，尝试查找同类型的条目（如都包含"文风"）
-        if (!bestMatch) {
-            const selectedKeywords = selectedEntry.name.toLowerCase().match(/[\u4e00-\u9fa5]+|[a-zA-Z]+/g) || [];
-
-            for (let i = 0; i < targetEntries.length; i++) {
-                const targetEntry = targetEntries[i];
-                const targetKeywords = targetEntry.name.toLowerCase().match(/[\u4e00-\u9fa5]+|[a-zA-Z]+/g) || [];
-
-                // 检查是否有共同关键词
-                const hasCommonKeyword = selectedKeywords.some(sk =>
-                    targetKeywords.some(tk => sk === tk || sk.includes(tk) || tk.includes(sk))
-                );
-
-                if (hasCommonKeyword) {
-                    bestMatch = targetEntry;
-                    bestSimilarity = 0.25; // 给一个基础相似度
-                    bestPosition = `after-${i}`;
-                    bestIndex = i;
-                    console.log(`  通过关键词匹配找到: "${targetEntry.name}"`);
-                    break;
-                }
-            }
-        }
-
-        console.log(`  最终选择: ${bestMatch ? `"${bestMatch.name}" (${Math.round(bestSimilarity * 100)}%)` : '插入到底部'}`);
-
-        results.push({
-            entry: selectedEntry,
-            bestMatch: bestMatch,
-            similarity: bestSimilarity,
-            position: bestPosition,
-            positionText: bestMatch ? `插入到 "${bestMatch.name}" 之后 (相似度: ${Math.round(bestSimilarity * 100)}%)` : '插入到底部 (未找到相似条目)'
-        });
-    }
-
-    return results;
-}
 
 function getDeviceInfo() {
     const parentWindow = getParentWindow();
@@ -853,9 +724,6 @@ function createTransferUI() {
                                         <button id="left-show-new" class="selection-btn">
                                             <span class="btn-icon">🆕</span> 新增
                                         </button>
-                                        <button id="left-smart-transfer" class="selection-btn" disabled>
-                                            <span class="btn-icon">🎯</span> 智能转移
-                                        </button>
                                     </div>
                                 </div>
                                 <span id="left-selection-count" class="selection-count"></span>
@@ -900,9 +768,6 @@ function createTransferUI() {
                                     <div class="control-row">
                                         <button id="right-show-new" class="selection-btn">
                                             <span class="btn-icon">🆕</span> 新增
-                                        </button>
-                                        <button id="right-smart-transfer" class="selection-btn" disabled>
-                                            <span class="btn-icon">🎯</span> 智能转移
                                         </button>
                                     </div>
                                 </div>
@@ -1375,7 +1240,7 @@ function bindTransferEvents(apiInfo, modal) {
     $('#left-select-none').on('click', () => { $('#left-entries-list .entry-checkbox').prop('checked', false); updateDualSelectionCount(); });
     $('#left-new-entry').on('click', () => startNewEntryMode(apiInfo, 'left'));
     $('#left-show-new').on('click', () => toggleNewEntries(apiInfo, 'left'));
-    $('#left-smart-transfer').on('click', () => startSmartTransferMode(apiInfo, 'left', 'right'));
+
     $('#left-edit').on('click', () => editSelectedEntry(apiInfo, 'left'));
     $('#left-delete').on('click', () => deleteSelectedEntries(apiInfo, 'left'));
     $('#transfer-to-right').on('click', () => startTransferMode(apiInfo, 'left', 'right'));
@@ -1385,7 +1250,7 @@ function bindTransferEvents(apiInfo, modal) {
     $('#right-select-none').on('click', () => { $('#right-entries-list .entry-checkbox').prop('checked', false); updateDualSelectionCount(); });
     $('#right-new-entry').on('click', () => startNewEntryMode(apiInfo, 'right'));
     $('#right-show-new').on('click', () => toggleNewEntries(apiInfo, 'right'));
-    $('#right-smart-transfer').on('click', () => startSmartTransferMode(apiInfo, 'right', 'left'));
+
     $('#right-edit').on('click', () => editSelectedEntry(apiInfo, 'right'));
     $('#right-delete').on('click', () => deleteSelectedEntries(apiInfo, 'right'));
     $('#transfer-to-left').on('click', () => startTransferMode(apiInfo, 'right', 'left'));
@@ -1767,12 +1632,12 @@ function updateDualSelectionCount() {
     $('#left-edit').prop('disabled', leftSelected !== 1);
     $('#left-delete').prop('disabled', leftSelected === 0);
     $('#transfer-to-right').prop('disabled', leftSelected === 0 || !$('#right-preset').val());
-    $('#left-smart-transfer').prop('disabled', leftSelected === 0 || !$('#right-preset').val());
+
 
     $('#right-edit').prop('disabled', rightSelected !== 1);
     $('#right-delete').prop('disabled', rightSelected === 0);
     $('#transfer-to-left').prop('disabled', rightSelected === 0 || !$('#left-preset').val());
-    $('#right-smart-transfer').prop('disabled', rightSelected === 0 || !$('#left-preset').val());
+
 }
 
 function filterDualEntries(searchTerm) {
@@ -2052,260 +1917,15 @@ function startTransferMode(apiInfo, fromSide, toSide) {
     $(`#${fromSide}-side`).addClass('transfer-source');
 }
 
-function startSmartTransferMode(apiInfo, fromSide, toSide) {
-    const $ = getJQuery();
-    const selectedEntries = getSelectedEntries(fromSide);
-    const toPreset = $(`#${toSide}-preset`).val();
 
-    if (selectedEntries.length === 0) {
-        alert('请至少选择一个条目进行转移');
-        return;
-    }
 
-    if (!toPreset) {
-        alert('请选择目标预设');
-        return;
-    }
 
-    try {
-        // 获取目标预设的条目
-        const toPresetData = getPresetDataFromManager(apiInfo, toPreset);
-        const targetEntries = getPromptEntries(toPresetData);
 
-        // 找到最佳插入位置
-        const insertionPlan = findBestInsertPosition(selectedEntries, targetEntries);
 
-        // 显示智能转移预览
-        showSmartTransferPreview(apiInfo, fromSide, toSide, insertionPlan);
 
-    } catch (error) {
-        console.error('智能转移失败:', error);
-        alert('智能转移失败: ' + error.message);
-    }
-}
 
-function showSmartTransferPreview(apiInfo, fromSide, toSide, insertionPlan) {
-    const $ = getJQuery();
-    const { isMobile, isSmallScreen, isPortrait } = getDeviceInfo();
 
-    // 移除已存在的预览模态框
-    $('#smart-transfer-modal').remove();
 
-    const fromPreset = $(`#${fromSide}-preset`).val();
-    const toPreset = $(`#${toSide}-preset`).val();
-
-    const modalHtml = `
-        <div id="smart-transfer-modal">
-            <div class="smart-transfer-modal-content">
-                <div class="smart-transfer-header">
-                    <div>
-                        <span>🎯</span>
-                        <h2>智能转移预览</h2>
-                        <button class="close-smart-transfer-btn" id="close-smart-transfer-header">❌</button>
-                    </div>
-                    <div class="transfer-info">从 ${fromPreset} 转移到 ${toPreset}</div>
-                </div>
-                <div class="transfer-plan">
-                    <h3>📋 转移计划</h3>
-                    <div class="plan-list">
-                        ${insertionPlan.map((plan, index) => `
-                            <div class="plan-item">
-                                <div class="plan-entry">
-                                    <strong>${plan.entry.name}</strong>
-                                </div>
-                                <div class="plan-position">
-                                    ${plan.positionText}
-                                </div>
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>
-                <div class="smart-transfer-actions">
-                    <button id="execute-smart-transfer" class="execute-btn">✅ 执行转移</button>
-                    <button id="cancel-smart-transfer" class="cancel-btn">❌ 取消</button>
-                </div>
-            </div>
-        </div>
-    `;
-
-    $('body').append(modalHtml);
-    applySmartTransferStyles(isMobile, isSmallScreen, isPortrait);
-    bindSmartTransferEvents(apiInfo, fromSide, toSide, insertionPlan);
-}
-
-function applySmartTransferStyles(isMobile, isSmallScreen, isPortrait) {
-    const isDark = isDarkTheme();
-    const bgColor = isDark ? '#1a1a1a' : '#ffffff';
-    const textColor = isDark ? '#e0e0e0' : '#374151';
-    const borderColor = isDark ? '#374151' : '#e5e7eb';
-    const sectionBg = isDark ? '#262626' : '#f9fafb';
-
-    const styles = `
-        #smart-transfer-modal {
-            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-            z-index: 10003; display: flex; align-items: ${isMobile ? 'flex-start' : 'center'};
-            justify-content: center; padding: ${isMobile ? '10px' : '20px'};
-            ${isMobile ? 'padding-top: 20px;' : ''}
-            overflow-y: auto; -webkit-overflow-scrolling: touch; animation: pt-fadeIn 0.3s ease-out;
-        }
-        #smart-transfer-modal .smart-transfer-modal-content {
-            background: ${bgColor}; border-radius: ${isMobile ? '16px' : '20px'};
-            padding: ${isSmallScreen ? '24px' : isMobile ? '28px' : '32px'};
-            max-width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '600px'};
-            width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '90%'};
-            max-height: ${isMobile ? '90vh' : '85vh'};
-            overflow-y: auto; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            ${isMobile ? '-webkit-overflow-scrolling: touch;' : ''}
-            animation: pt-slideUp 0.3s ease-out;
-        }
-        #smart-transfer-modal .smart-transfer-header {
-            text-align: center; margin-bottom: ${isMobile ? '24px' : '28px'};
-            padding-bottom: ${isMobile ? '18px' : '22px'}; border-bottom: 1px solid ${borderColor};
-        }
-        #smart-transfer-modal .smart-transfer-header > div:first-child {
-            display: flex; align-items: center; justify-content: center;
-            gap: 12px; padding: ${isMobile ? '8px 0' : '12px 0'}; position: relative;
-        }
-        #smart-transfer-modal .close-smart-transfer-btn {
-            position: absolute; right: 0; top: 50%; transform: translateY(-50%);
-            background: none; border: none; font-size: ${isMobile ? '18px' : '16px'};
-            cursor: pointer; color: ${isDark ? '#9ca3af' : '#6b7280'}; padding: 4px;
-        }
-        #smart-transfer-modal .close-smart-transfer-btn:hover { color: ${textColor}; }
-        #smart-transfer-modal .smart-transfer-header span { font-size: ${isSmallScreen ? '28px' : isMobile ? '32px' : '36px'}; }
-        #smart-transfer-modal .smart-transfer-header h2 {
-            margin: 0; font-size: ${isSmallScreen ? '22px' : isMobile ? '24px' : '28px'};
-            font-weight: 700; color: ${isDark ? '#f3f4f6' : '#111827'}; letter-spacing: -0.5px;
-        }
-        #smart-transfer-modal .transfer-info {
-            margin-top: 8px; font-size: ${isMobile ? '14px' : '13px'};
-            color: ${isDark ? '#9ca3af' : '#6b7280'}; font-weight: 500;
-        }
-        #smart-transfer-modal .transfer-plan h3 {
-            margin: 0 0 ${isMobile ? '16px' : '20px'} 0; font-size: ${isMobile ? '18px' : '20px'};
-            font-weight: 600; color: ${textColor};
-        }
-        #smart-transfer-modal .plan-item {
-            background: ${sectionBg}; border: 1px solid ${borderColor}; border-radius: 8px;
-            padding: ${isMobile ? '12px' : '16px'}; margin-bottom: ${isMobile ? '8px' : '12px'};
-        }
-        #smart-transfer-modal .plan-entry {
-            font-weight: 600; color: ${textColor}; font-size: ${isMobile ? '14px' : '16px'};
-            margin-bottom: 4px;
-        }
-        #smart-transfer-modal .plan-position {
-            font-size: ${isMobile ? '12px' : '13px'}; color: ${isDark ? '#9ca3af' : '#6b7280'};
-        }
-        #smart-transfer-modal .smart-transfer-actions {
-            display: flex; justify-content: center; gap: ${isMobile ? '12px' : '16px'};
-            margin-top: ${isMobile ? '24px' : '28px'}; padding-top: ${isMobile ? '20px' : '24px'};
-            border-top: 1px solid ${borderColor};
-        }
-        #smart-transfer-modal .smart-transfer-actions button {
-            padding: ${isMobile ? '12px 20px' : '14px 24px'}; border: none; border-radius: 8px;
-            cursor: pointer; font-size: ${isMobile ? '14px' : '15px'}; font-weight: 600;
-            transition: all 0.3s ease; letter-spacing: 0.3px;
-        }
-        #smart-transfer-modal .execute-btn {
-            background: #059669; color: #ffffff;
-        }
-        #smart-transfer-modal .execute-btn:hover {
-            background: #047857; transform: translateY(-1px);
-        }
-        #smart-transfer-modal .cancel-btn {
-            background: #9ca3af; color: #ffffff;
-        }
-        #smart-transfer-modal .cancel-btn:hover {
-            background: #6b7280; transform: translateY(-1px);
-        }
-    `;
-
-    if (!$('#smart-transfer-modal-styles').length) {
-        $('head').append(`<style id="smart-transfer-modal-styles">${styles}</style>`);
-    }
-}
-
-function bindSmartTransferEvents(apiInfo, fromSide, toSide, insertionPlan) {
-    const $ = getJQuery();
-    const modal = $('#smart-transfer-modal');
-
-    // 关闭按钮事件
-    $('#cancel-smart-transfer, #close-smart-transfer-header').on('click', () => {
-        modal.remove();
-        $('#smart-transfer-modal-styles').remove();
-    });
-
-    // 执行转移按钮事件
-    $('#execute-smart-transfer').on('click', async () => {
-        try {
-            $('#execute-smart-transfer').prop('disabled', true).text('转移中...');
-
-            await executeSmartTransfer(apiInfo, fromSide, toSide, insertionPlan);
-
-            alert(`成功转移 ${insertionPlan.length} 个条目！`);
-
-            // 检查是否需要自动关闭模态框
-            if ($('#auto-close-modal').prop('checked')) {
-                $('#preset-transfer-modal').remove();
-            } else {
-                // 重新加载条目
-                loadAndDisplayEntries(apiInfo);
-            }
-
-            modal.remove();
-            $('#smart-transfer-modal-styles').remove();
-
-        } catch (error) {
-            console.error('智能转移执行失败:', error);
-            alert('智能转移执行失败: ' + error.message);
-            $('#execute-smart-transfer').prop('disabled', false).text('✅ 执行转移');
-        }
-    });
-
-    // 点击模态框外部关闭
-    modal.on('click', e => {
-        if (e.target === modal[0]) {
-            modal.remove();
-            $('#smart-transfer-modal-styles').remove();
-        }
-    });
-
-    // ESC键关闭模态框
-    $(document).on('keydown.smart-transfer-modal', e => {
-        if (e.key === 'Escape') {
-            modal.remove();
-            $('#smart-transfer-modal-styles').remove();
-            $(document).off('keydown.smart-transfer-modal');
-        }
-    });
-}
-
-async function executeSmartTransfer(apiInfo, fromSide, toSide, insertionPlan) {
-    const $ = getJQuery();
-    const fromPreset = $(`#${fromSide}-preset`).val();
-    const toPreset = $(`#${toSide}-preset`).val();
-    const displayMode = $(`#${toSide}-display-mode`).val();
-    const autoEnable = $('#auto-enable-entry').prop('checked');
-
-    // 按照计划逐个转移条目
-    for (const plan of insertionPlan) {
-        try {
-            await performTransfer(
-                apiInfo,
-                fromPreset,
-                toPreset,
-                [plan.entry],
-                plan.position,
-                autoEnable,
-                displayMode
-            );
-        } catch (error) {
-            console.error(`转移条目 "${plan.entry.name}" 失败:`, error);
-            throw new Error(`转移条目 "${plan.entry.name}" 失败: ${error.message}`);
-        }
-    }
-}
 
 function startNewEntryMode(apiInfo, side) {
     const $ = getJQuery();
