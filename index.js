@@ -1,6 +1,12 @@
 // @ts-nocheck
 // Author: discord千秋梦
-// Version: v1.5
+// Version: v1.6
+// 重构说明：
+// - 新增"在此处新建"功能
+// - 添加了导入导出词条功能以及位置选择功能，允许用户指定条目插入位置
+// - 优化了getLoadedPresetName函数的兼容性和稳定性
+// - 统一了数据结构使用，同时支持新旧两种预设格式
+// - 清理了冗余代码，提升了代码质量和可维护性
 
 function getSillyTavernContext() {
   const st = window.parent?.SillyTavern ?? window.SillyTavern;
@@ -35,15 +41,78 @@ function getCurrentApiInfo() {
   }
 }
 
-function getCurrentPresetName() {
-  return getLoadedPresetName();
-}
-
 function setCurrentPreset(side) {
-  const currentPresetName = getCurrentPresetName();
+  let currentPresetName = null;
+
+  try {
+    // 方法1: 尝试使用全局 API（@types/function/preset.d.ts 提供）
+    if (typeof window.getLoadedPresetName === 'function') {
+      currentPresetName = window.getLoadedPresetName();
+    } else if (typeof getLoadedPresetName === 'function') {
+      currentPresetName = getLoadedPresetName();
+    }
+  } catch (e) {
+    console.warn('全局getLoadedPresetName调用失败:', e);
+    currentPresetName = null;
+  }
+
+  // 方法2: 尝试从SillyTavern上下文获取
+  if (!currentPresetName) {
+    try {
+      const context = getSillyTavernContext();
+      if (typeof context?.getLoadedPresetName === 'function') {
+        currentPresetName = context.getLoadedPresetName();
+      }
+    } catch (e) {
+      console.warn('从context获取预设名称失败:', e);
+    }
+  }
+
+  // 方法3: 尝试从父窗口获取
+  if (!currentPresetName) {
+    try {
+      const parentWindow = getParentWindow();
+      if (typeof parentWindow.getLoadedPresetName === 'function') {
+        currentPresetName = parentWindow.getLoadedPresetName();
+      }
+    } catch (e) {
+      console.warn('从父窗口获取预设名称失败:', e);
+    }
+  }
+
+  // 方法4: 尝试从预设管理器获取当前预设
+  if (!currentPresetName) {
+    try {
+      const apiInfo = getCurrentApiInfo();
+      if (apiInfo && apiInfo.presetManager) {
+        // 尝试获取当前使用的预设名称
+        const currentPreset = apiInfo.presetManager.getCompletionPresetByName('in_use');
+        if (currentPreset && currentPreset.name && currentPreset.name !== 'in_use') {
+          currentPresetName = currentPreset.name;
+        }
+      }
+    } catch (e) {
+      console.warn('从预设管理器获取预设名称失败:', e);
+    }
+  }
+
   const $ = getJQuery();
   const selectId = side === 'left' ? '#left-preset' : '#right-preset';
   const $select = $(selectId);
+
+  if (!currentPresetName) {
+    alert(
+      '无法获取当前预设名称，请确保已选择预设。\n\n可能的原因：\n1. 当前没有加载任何预设\n2. 预设API不可用\n3. 需要刷新页面重新加载',
+    );
+    return;
+  }
+
+  // 检查预设是否存在于选项中
+  const optionExists = $select.find(`option[value="${currentPresetName}"]`).length > 0;
+  if (!optionExists) {
+    alert(`当前预设"${currentPresetName}"不在可选列表中，可能需要刷新预设列表`);
+    return;
+  }
 
   // 设置选中的预设
   $select.val(currentPresetName).trigger('change');
@@ -60,10 +129,12 @@ function setCurrentPreset(side) {
 async function batchDeletePresets(presetNames) {
   const results = [];
   const errors = [];
+  const apiInfo = getCurrentApiInfo();
 
   for (const presetName of presetNames) {
     try {
-      const success = await deletePreset(presetName);
+      // 使用正确的删除方法
+      const success = await apiInfo.presetManager.deletePreset(presetName);
       results.push({ name: presetName, success });
       if (!success) {
         errors.push(`预设 "${presetName}" 删除失败`);
@@ -363,7 +434,6 @@ function bindBatchDeleteEvents() {
   updateSelectedCount();
 }
 
-
 function getPresetDataFromManager(apiInfo, presetName) {
   try {
     const presetData = apiInfo.presetManager.getCompletionPresetByName(presetName);
@@ -497,7 +567,7 @@ function toggleNewEntries(apiInfo, side) {
     // 取消所有选择
     setTimeout(() => {
       $(`#${side}-entries-list .entry-checkbox`).prop('checked', false);
-      updateDualSelectionCount();
+      updateSelectionCount();
     }, 50);
   } else {
     // 开启新增模式
@@ -919,7 +989,7 @@ function createTransferUI() {
                         <h2>预设条目转移工具</h2>
                     </div>
                     <div class="version-info">
-                        <span class="author">V1.5 by discord千秋梦</span>
+                        <span class="author">V1.6 by discord千秋梦</span>
                     </div>
                 </div>
                 <div class="preset-selection">
@@ -965,7 +1035,7 @@ function createTransferUI() {
                 <div id="entries-container" style="display: none;">
                     <div class="entries-header">
                         <h4>📝 双向预设管理</h4>
-                        <p>💡 提示：左右两侧显示不同预设的条目，可以互相转移、编辑、删除和新建</p>
+                        <p>💡 提示：左右两侧显示不同预设的条目，可以互相转移、编辑、删除，点击条目右侧的➕按钮可在此处新建</p>
                         <div class="search-section">
                             <input type="text" id="entry-search" placeholder="🔍 搜索条目...">
                             </div>
@@ -984,11 +1054,7 @@ function createTransferUI() {
                                             <span class="btn-icon">✗</span> 不选
                                         </button>
                                     </div>
-                                    <div class="control-row">
-                                        <button id="single-new-entry" class="selection-btn">
-                                            <span class="btn-icon">+</span> 新建
-                                        </button>
-                                    </div>
+
                                     <div class="display-options">
                                         <select id="single-display-mode" class="display-mode-select">
                                             <option value="default">仅显示已启用</option>
@@ -1018,11 +1084,7 @@ function createTransferUI() {
                                             <span class="btn-icon">✗</span> 不选
                                         </button>
                                     </div>
-                                    <div class="control-row">
-                                        <button id="left-new-entry" class="selection-btn">
-                                            <span class="btn-icon">+</span> 新建
-                                        </button>
-                                    </div>
+
                                     <div class="display-options">
                                         <select id="left-display-mode" class="display-mode-select">
                                             <option value="default">仅显示已启用</option>
@@ -1060,14 +1122,7 @@ function createTransferUI() {
                                             <span class="btn-icon">✗</span> 不选
                                         </button>
                                     </div>
-                                    <div class="control-row">
-                                        <button id="right-new-entry" class="selection-btn">
-                                            <span class="btn-icon">+</span> 新建
-                                        </button>
-                                        <button id="compare-entries" class="selection-btn" disabled>
-                                            <span class="btn-icon">⚖</span> 比较
-                                        </button>
-                                    </div>
+
                                     <div class="display-options">
                                         <select id="right-display-mode" class="display-mode-select">
                                             <option value="default">仅显示已启用</option>
@@ -1077,6 +1132,9 @@ function createTransferUI() {
                                     <div class="control-row">
                                         <button id="right-show-new" class="selection-btn">
                                             <span class="btn-icon">🆕</span> 新增
+                                        </button>
+                                        <button id="compare-entries" class="selection-btn" disabled>
+                                            <span class="btn-icon">⚖</span> 比较
                                         </button>
                                     </div>
                                 </div>
@@ -1105,6 +1163,258 @@ function createTransferUI() {
   $('body').append(modalHtml);
   applyStyles(isMobile, isSmallScreen, isPortrait);
   bindTransferEvents(apiInfo, $('#preset-transfer-modal'));
+
+  // 初始化新增功能
+  initializeEnhancedFeatures(apiInfo);
+}
+
+// 初始化增强功能
+function initializeEnhancedFeatures(apiInfo) {
+  console.log('初始化增强功能...');
+
+  // 延迟初始化，确保UI已完全加载
+  setTimeout(() => {
+    try {
+      // 添加预览按钮到预设选择区域
+      addPreviewButtons(apiInfo);
+
+      // 添加增强功能按钮到控制区域
+      addEnhancedButtons(apiInfo);
+
+      console.log('增强功能初始化完成');
+    } catch (error) {
+      console.error('增强功能初始化失败:', error);
+    }
+  }, 500);
+}
+
+// 添加预览按钮
+function addPreviewButtons(apiInfo) {
+  const $ = getJQuery();
+
+  // 为左侧预设添加预览按钮
+  if (!$('#left-preview-btn').length) {
+    const leftPreviewBtn = $(`
+      <button id="left-preview-btn" class="get-current-btn" title="预览预设" style="margin-left: 4px;">
+        👁️
+      </button>
+    `);
+
+    leftPreviewBtn.on('click', () => {
+      const presetName = $('#left-preset').val();
+      if (presetName) {
+        QuickPreview.showPreviewModal(apiInfo, presetName);
+      } else {
+        alert('请先选择左侧预设');
+      }
+    });
+
+    $('#get-current-left').after(leftPreviewBtn);
+  }
+
+  // 为右侧预设添加预览按钮
+  if (!$('#right-preview-btn').length) {
+    const rightPreviewBtn = $(`
+      <button id="right-preview-btn" class="get-current-btn" title="预览预设" style="margin-left: 4px;">
+        👁️
+      </button>
+    `);
+
+    rightPreviewBtn.on('click', () => {
+      const presetName = $('#right-preset').val();
+      if (presetName) {
+        QuickPreview.showPreviewModal(apiInfo, presetName);
+      } else {
+        alert('请先选择右侧预设');
+      }
+    });
+
+    $('#get-current-right').after(rightPreviewBtn);
+  }
+}
+
+// 添加增强功能按钮
+function addEnhancedButtons(apiInfo) {
+  const $ = getJQuery();
+
+  // 添加到左侧控制区域
+  addButtonsToSide('left', apiInfo);
+  addButtonsToSide('right', apiInfo);
+  addButtonsToSide('single', apiInfo);
+}
+
+// 为指定侧添加按钮
+function addButtonsToSide(side, apiInfo) {
+  const $ = getJQuery();
+
+  // 单选模式使用不同的选择器
+  let sideControls;
+  if (side === 'single') {
+    sideControls = $('#single-container .side-controls .control-row').first();
+    if (!sideControls.length) {
+      // 如果没有找到，尝试其他可能的选择器
+      sideControls = $('#single-container .control-row').first();
+    }
+  } else {
+    sideControls = $(`#${side}-side .side-controls .control-row`).first();
+  }
+
+  if (sideControls.length && !$(`#${side}-export-btn`).length) {
+    // 添加导出按钮
+    const exportBtn = $(`
+      <button id="${side}-export-btn" class="selection-btn" disabled style="margin-left: 4px;">
+        <span class="btn-icon">📤</span> 导出
+      </button>
+    `);
+
+    exportBtn.on('click', () => {
+      const selectedEntries = getSelectedEntriesForSide(side);
+      if (selectedEntries.length > 0) {
+        ImportExportEnhancer.showExportDialog(selectedEntries);
+      } else {
+        alert('请先选择要导出的条目');
+      }
+    });
+
+    sideControls.append(exportBtn);
+
+    // 批量复制功能已移除，改为条目级别的"在此处新建"功能
+
+    // 添加导入按钮
+    const importBtn = $(`
+      <button id="${side}-import-btn" class="selection-btn" style="margin-left: 4px;">
+        <span class="btn-icon">📥</span> 导入
+      </button>
+    `);
+
+    importBtn.on('click', () => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json,.csv';
+      input.onchange = async e => {
+        const file = e.target.files[0];
+        if (file) {
+          const presetName = getPresetNameForSide(side);
+          if (presetName) {
+            try {
+              await ImportExportEnhancer.importEntries(file, presetName, apiInfo);
+              // 导入完成后立即刷新界面
+              loadAndDisplayEntries(apiInfo);
+            } catch (error) {
+              console.error('导入失败:', error);
+              if (window.toastr) {
+                toastr.error('导入失败: ' + error.message);
+              } else {
+                alert('导入失败: ' + error.message);
+              }
+            }
+          } else {
+            alert('请先选择目标预设');
+          }
+        }
+      };
+      input.click();
+    });
+
+    sideControls.append(importBtn);
+  }
+}
+
+// 获取指定侧的选中条目
+function getSelectedEntriesForSide(side) {
+  const $ = getJQuery();
+  const selectedEntries = [];
+
+  $(`#${side}-entries-list .entry-checkbox:checked`).each(function () {
+    const $entryItem = $(this).closest('.entry-item');
+    const index = parseInt($entryItem.data('index'));
+    const identifier = $entryItem.data('identifier');
+
+    // 根据侧获取对应的条目数据
+    let entries;
+    if (side === 'left') {
+      entries = window.leftEntries || [];
+    } else if (side === 'right') {
+      entries = window.rightEntries || [];
+    } else if (side === 'single') {
+      entries = window.singleEntries || [];
+    }
+
+    // 优先使用identifier查找，否则使用index
+    let entry;
+    if (identifier) {
+      entry = entries.find(e => e.identifier === identifier);
+    }
+    if (!entry && !isNaN(index) && index >= 0 && index < entries.length) {
+      entry = entries[index];
+    }
+
+    if (entry) {
+      selectedEntries.push(entry);
+    }
+  });
+
+  return selectedEntries;
+}
+
+// 获取指定侧的预设名称
+function getPresetNameForSide(side) {
+  const $ = getJQuery();
+
+  if (side === 'left') {
+    return $('#left-preset').val();
+  } else if (side === 'right') {
+    return $('#right-preset').val();
+  } else if (side === 'single') {
+    return window.singlePresetName || $('#left-preset').val() || $('#right-preset').val();
+  }
+
+  return null;
+}
+
+// 应用批量修改到指定侧
+async function applyBatchModificationsToSide(side, selectedEntries, modifications, apiInfo) {
+  try {
+    const presetName = getPresetNameForSide(side);
+    if (!presetName) {
+      alert('无法确定目标预设');
+      return;
+    }
+
+    // 应用批量修改
+    const modifiedEntries = BatchEditor.applyBatchModifications(selectedEntries, modifications);
+
+    // 获取预设数据
+    const presetData = getPresetDataFromManager(apiInfo, presetName);
+    const allEntries = presetData.prompts || [];
+
+    // 更新修改的条目
+    modifiedEntries.forEach(modifiedEntry => {
+      const index = allEntries.findIndex(e => e.identifier === modifiedEntry.identifier);
+      if (index >= 0) {
+        allEntries[index] = modifiedEntry;
+      }
+    });
+
+    // 保存预设
+    await apiInfo.presetManager.savePreset(presetName, presetData);
+
+    if (window.toastr) {
+      toastr.success(`已对 ${selectedEntries.length} 个条目应用批量修改`);
+    } else {
+      alert(`已对 ${selectedEntries.length} 个条目应用批量修改`);
+    }
+
+    // 刷新界面
+    loadAndDisplayEntries(apiInfo);
+  } catch (error) {
+    console.error('批量修改失败:', error);
+    if (window.toastr) {
+      toastr.error('批量修改失败: ' + error.message);
+    } else {
+      alert('批量修改失败: ' + error.message);
+    }
+  }
 }
 
 function applyStyles(isMobile, isSmallScreen, isPortrait) {
@@ -1675,6 +1985,9 @@ function bindTransferEvents(apiInfo, modal) {
 
   loadBtn.on('click', () => loadAndDisplayEntries(apiInfo));
   $('#batch-delete-presets').on('click', () => createBatchDeleteModal(apiInfo));
+
+  // 智能导入按钮事件
+
   $('#entry-search').on('input', function () {
     filterDualEntries($(this).val());
   });
@@ -1711,7 +2024,7 @@ function bindTransferEvents(apiInfo, modal) {
     $('#left-entries-list .entry-checkbox').prop('checked', false);
     updateSelectionCount();
   });
-  $('#left-new-entry').on('click', () => startNewEntryMode(apiInfo, 'left'));
+
   $('#left-show-new').on('click', () => toggleNewEntries(apiInfo, 'left'));
 
   $('#left-edit').on('click', () => editSelectedEntry(apiInfo, 'left'));
@@ -1727,7 +2040,7 @@ function bindTransferEvents(apiInfo, modal) {
     $('#right-entries-list .entry-checkbox').prop('checked', false);
     updateSelectionCount();
   });
-  $('#right-new-entry').on('click', () => startNewEntryMode(apiInfo, 'right'));
+
   $('#right-show-new').on('click', () => toggleNewEntries(apiInfo, 'right'));
 
   $('#right-edit').on('click', () => editSelectedEntry(apiInfo, 'right'));
@@ -1744,7 +2057,7 @@ function bindTransferEvents(apiInfo, modal) {
     $('#single-entries-list .entry-checkbox').prop('checked', false);
     updateSelectionCount();
   });
-  $('#single-new-entry').on('click', () => startNewEntryMode(apiInfo, 'single'));
+
   $('#single-edit').on('click', () => editSelectedEntry(apiInfo, 'single'));
   $('#single-delete').on('click', () => deleteSelectedEntries(apiInfo, 'single'));
 
@@ -1986,6 +2299,9 @@ function displayEntries(entries, side) {
                  </div>`
                  }
              </div>
+             <button class="create-here-btn" data-entry-index="${index}" data-entry-side="${side}" title="在此处新建" style="margin-left: 8px; padding: 4px 8px; background: #10b981; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; z-index: 20;">
+                 ➕
+             </button>
          </div>`,
         )),
     renderPositionItem('bottom', '📍 插入到底部'),
@@ -2003,7 +2319,7 @@ function displayEntries(entries, side) {
     });
 
     entriesContainer.off('click', '.entry-item').on('click', '.entry-item', function (e) {
-      if (!parentJQuery(e.target).is('.entry-checkbox')) {
+      if (!parentJQuery(e.target).is('.entry-checkbox') && !parentJQuery(e.target).is('.create-here-btn')) {
         e.preventDefault();
         const $item = parentJQuery(this);
         const itemSide = $item.data('side');
@@ -2024,8 +2340,11 @@ function displayEntries(entries, side) {
           const index = parseInt($item.data('index'));
           const identifier = $item.data('identifier');
           const targetPreset = $(`#${itemSide}-preset`).val();
+
+          // 始终使用完整列表来计算在prompt_order中的真实位置
           const fullList = getTargetPromptsList(targetPreset, 'include_disabled');
           const realIndex = fullList.findIndex(entry => entry.identifier === identifier);
+
           executeTransferToPosition(
             window.transferMode.apiInfo,
             window.transferMode.fromSide,
@@ -2051,6 +2370,81 @@ function displayEntries(entries, side) {
         checkbox.prop('checked', !checkbox.prop('checked')).trigger('change');
       }
     });
+
+    // 绑定“在此处新建”按钮事件
+    entriesContainer.off('click', '.create-here-btn').on('click', '.create-here-btn', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const $btn = parentJQuery(this);
+      const entryIndex = parseInt($btn.data('entry-index'));
+      const entrySide = $btn.data('entry-side');
+
+      // 目标预设
+      let presetName;
+      if (entrySide === 'left') {
+        presetName = parentJQuery('#left-preset').val();
+      } else if (entrySide === 'right') {
+        presetName = parentJQuery('#right-preset').val();
+      } else if (entrySide === 'single') {
+        presetName = window.singlePresetName;
+      }
+
+      if (!presetName) {
+        alert('请先选择目标预设');
+        return;
+      }
+
+      const apiInfo = getCurrentApiInfo();
+      if (!apiInfo) {
+        alert('无法获取API信息');
+        return;
+      }
+
+      // 计算“真实索引”（包含被隐藏的禁用项）
+      const $entryItem = $btn.closest('.entry-item');
+      const identifier = $entryItem.data('identifier');
+      const fullList = getTargetPromptsList(presetName, 'include_disabled');
+      const realIndex = identifier ? fullList.findIndex(e => e.identifier === identifier) : entryIndex;
+
+      const defaultEntry = {
+        name: '新提示词',
+        content: '',
+        role: 'system',
+        injection_depth: 4,
+        injection_position: null,
+        forbid_overrides: false,
+        system_prompt: false,
+        marker: false,
+        injection_order: NEW_FIELD_DEFAULTS.injection_order,
+        injection_trigger: [...NEW_FIELD_DEFAULTS.injection_trigger],
+        isNewEntry: true,
+      };
+
+      const autoEnable = parentJQuery('#auto-enable-entry').prop('checked');
+
+      performInsertNewEntry(
+        apiInfo,
+        presetName,
+        defaultEntry,
+        `after-${realIndex >= 0 ? realIndex : entryIndex}`,
+        autoEnable,
+      )
+        .then(() => {
+          if (window.toastr) {
+            toastr.success('已在此处新建空白条目');
+          }
+          loadAndDisplayEntries(apiInfo);
+        })
+        .catch(error => {
+          console.error('在此处新建失败:', error);
+          if (window.toastr) {
+            toastr.error('在此处新建失败: ' + error.message);
+          } else {
+            alert('在此处新建失败: ' + error.message);
+          }
+        });
+    });
   }, 50);
 }
 
@@ -2060,8 +2454,11 @@ function updatePanelButtons(side) {
   const selected = $(`#${side}-entries-list .entry-checkbox:checked`).length;
 
   $(`#${side}-selection-count`).text(`已选择 ${selected}/${total}`);
-  $(`#${side}-edit`).prop('disabled', selected !== 1);
+  $(`#${side}-edit`).prop('disabled', selected === 0);
   $(`#${side}-delete`).prop('disabled', selected === 0);
+
+  // 更新增强功能按钮的状态
+  $(`#${side}-export-btn`).prop('disabled', selected === 0);
 
   if (side === 'left') {
     $('#transfer-to-right').prop('disabled', selected === 0 || !$('#right-preset').val());
@@ -2088,12 +2485,14 @@ function filterDualEntries(searchTerm) {
   clearSearchResults();
 
   if (!term) {
-    // 如果搜索词为空，显示所有条目
+    // 如果搜索词为空，显示所有条目并恢复"在此处新建"按钮
     $('#left-entries-list .entry-item, #right-entries-list .entry-item, #single-entries-list .entry-item').each(
       function () {
         const $item = $(this);
         if (!$item.hasClass('position-item')) {
           $item.show();
+          // 恢复"在此处新建"按钮的显示
+          $item.find('.create-here-btn').show();
         }
       },
     );
@@ -2111,6 +2510,9 @@ function filterDualEntries(searchTerm) {
 
         if (matches) {
           addJumpButton($item);
+        } else {
+          // 不匹配的条目隐藏"在此处新建"按钮
+          $item.find('.create-here-btn').hide();
         }
       }
     },
@@ -2125,11 +2527,13 @@ function filterSideEntries(side, searchTerm) {
   clearSearchResults(side);
 
   if (!term) {
-    // 如果搜索词为空，显示所有条目
+    // 如果搜索词为空，显示所有条目并恢复"在此处新建"按钮
     $(`#${side}-entries-list .entry-item`).each(function () {
       const $item = $(this);
       if (!$item.hasClass('position-item')) {
         $item.show();
+        // 恢复"在此处新建"按钮的显示
+        $item.find('.create-here-btn').show();
       }
     });
     return;
@@ -2145,6 +2549,9 @@ function filterSideEntries(side, searchTerm) {
 
       if (matches) {
         addJumpButton($item);
+      } else {
+        // 不匹配的条目隐藏"在此处新建"按钮
+        $item.find('.create-here-btn').hide();
       }
     }
   });
@@ -2174,6 +2581,9 @@ function addJumpButton($item) {
 
   // 将按钮添加到条目右侧（直接添加到条目容器）
   $item.append($jumpBtn);
+
+  // 在搜索模式下隐藏"在此处新建"按钮，避免UI冲突
+  $item.find('.create-here-btn').hide();
 }
 
 function clearSearchResults(side = null) {
@@ -2182,9 +2592,13 @@ function clearSearchResults(side = null) {
   if (side) {
     // 清除指定侧的跳转按钮
     $(`#${side}-entries-list .jump-btn`).remove();
+    // 恢复"在此处新建"按钮的显示
+    $(`#${side}-entries-list .create-here-btn`).show();
   } else {
     // 清除所有跳转按钮
     $('.jump-btn').remove();
+    // 恢复所有"在此处新建"按钮的显示
+    $('.create-here-btn').show();
   }
 }
 
@@ -3055,20 +3469,26 @@ function editSelectedEntry(apiInfo, side) {
     displayMode = $(`#${side}-display-mode`).val();
   }
 
-  if (selectedEntries.length !== 1) {
-    alert('请选择一个条目进行编辑');
-    return;
-  }
-
   if (!presetName) {
     alert('请先选择预设');
     return;
   }
 
-  const entry = selectedEntries[0];
-  const entryIndex = entries.findIndex(e => e.name === entry.name && e.content === entry.content);
-
-  createEditEntryModal(apiInfo, presetName, entry, null, false, side, entryIndex, displayMode);
+  // 合并的编辑逻辑：根据选择数量自动决定是单独编辑还是批量编辑
+  if (selectedEntries.length === 0) {
+    alert('请选择要编辑的条目');
+    return;
+  } else if (selectedEntries.length === 1) {
+    // 单独编辑
+    const entry = selectedEntries[0];
+    const entryIndex = entries.findIndex(e => e.name === entry.name && e.content === entry.content);
+    createEditEntryModal(apiInfo, presetName, entry, null, false, side, entryIndex, displayMode);
+  } else {
+    // 批量编辑（2个或以上）
+    BatchEditor.showBatchEditDialog(selectedEntries, modifications => {
+      applyBatchModificationsToSide(side, selectedEntries, modifications, apiInfo);
+    });
+  }
 }
 
 async function deleteSelectedEntries(apiInfo, side) {
@@ -3343,7 +3763,8 @@ function createEditEntryModal(
                     </div>
                 </div>
                 <div class="edit-modal-actions">
-                    <button id="save-entry-changes">${isNewEntry ? '✨ 创建条目' : '💾 保存更改'}</button>
+                    <button id="save-entry-changes">${isNewEntry ? '✨ 创建条目' : '💾 保存'}</button>
+                    <button id="find-replace-btn" style="background: #3b82f6;">🔍 替换</button>
                     <button id="cancel-edit">❌ 取消</button>
                 </div>
             </div>
@@ -3433,8 +3854,8 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
             padding: 10px; border-radius: 8px; border: 1px solid ${inputBorder};
         }
         #edit-entry-modal .ai-assistant-section {
-            padding: 15px;
-            margin-top: 10px;
+            padding: ${isMobile ? '12px' : '15px'};
+            margin-top: ${isMobile ? '8px' : '10px'};
             background: ${isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.02)'};
             border: 1px solid ${borderColor};
             border-radius: 8px;
@@ -3442,7 +3863,7 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
         #edit-entry-modal .ai-controls {
             display: grid;
             grid-template-columns: 1fr;
-            gap: 10px;
+            gap: ${isMobile ? '8px' : '10px'};
         }
         @media (min-width: 600px) {
             #edit-entry-modal .ai-controls {
@@ -3452,21 +3873,53 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
          #edit-entry-modal .ai-buttons-container {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-top: 10px;
+            gap: ${isMobile ? '8px' : '10px'};
+            margin-top: ${isMobile ? '8px' : '10px'};
         }
         #edit-entry-modal .ai-btn {
             background-color: ${isDark ? '#4b5563' : '#6b7280'};
             color: white;
             border: none;
-            padding: 10px 15px;
+            padding: ${isMobile ? '8px 12px' : '10px 15px'};
             border-radius: 6px;
             cursor: pointer;
             transition: background-color 0.2s;
             font-weight: 500;
+            font-size: ${isMobile ? '14px' : '15px'};
+            min-height: ${isMobile ? '40px' : '44px'};
         }
         #edit-entry-modal .ai-btn:hover {
             background-color: ${isDark ? '#6b7280' : '#4b5563'};
+        }
+        #edit-entry-modal #ai-style-entry-selector {
+            padding: ${isMobile ? '10px 12px' : '12px 15px'};
+            font-size: ${isMobile ? '14px' : '15px'};
+            border-radius: 6px;
+            border: 1px solid ${borderColor};
+            background: ${inputBg};
+            color: ${textColor};
+        }
+        #edit-entry-modal #ai-additional-prompt {
+            padding: ${isMobile ? '10px 12px' : '12px 15px'};
+            font-size: ${isMobile ? '14px' : '15px'};
+            border-radius: 6px;
+            border: 1px solid ${borderColor};
+            background: ${inputBg};
+            color: ${textColor};
+            min-height: ${isMobile ? '80px' : '100px'};
+            resize: vertical;
+            font-family: inherit;
+            line-height: 1.4;
+        }
+        #edit-entry-modal .ai-assistant-section label {
+            font-size: ${isMobile ? '15px' : '16px'};
+            font-weight: 600;
+            margin-bottom: ${isMobile ? '8px' : '10px'};
+        }
+        #edit-entry-modal .ai-assistant-section label span {
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
         #edit-entry-modal #ai-additional-prompt {
             margin-top: 10px;
@@ -3532,17 +3985,19 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
             transform: translateY(-50%) rotate(45%);
         }
         #edit-entry-modal .edit-modal-actions {
-            display: flex; justify-content: center; gap: ${isMobile ? '12px' : '16px'};
-            margin-top: ${isMobile ? '24px' : '28px'};
-            padding-top: ${isMobile ? '20px' : '24px'}; border-top: 1px solid #e5e7eb;
+            display: flex; justify-content: center; gap: ${isMobile ? '8px' : '16px'};
+            margin-top: ${isMobile ? '20px' : '28px'};
+            padding-top: ${isMobile ? '16px' : '24px'}; border-top: 1px solid #e5e7eb;
         }
         #edit-entry-modal .edit-modal-actions button {
-            padding: ${isMobile ? '14px 24px' : '12px 22px'}; border: none; color: #ffffff;
-            border-radius: 8px; cursor: pointer; font-size: ${isMobile ? '15px' : '14px'};
+            padding: ${isMobile ? '12px 16px' : '12px 22px'}; border: none; color: #ffffff;
+            border-radius: 8px; cursor: pointer; font-size: ${isMobile ? '14px' : '14px'};
             font-weight: 600; transition: all 0.3s ease; letter-spacing: 0.3px;
+            flex: ${isMobile ? '1' : 'none'};
         }
-        #edit-entry-modal #save-entry-changes { background: #059669; min-width: 140px; }
-        #edit-entry-modal #cancel-edit { background: #9ca3af; min-width: 100px; }
+        #edit-entry-modal #save-entry-changes { background: #059669; min-width: ${isMobile ? 'auto' : '140px'}; }
+        #edit-entry-modal #cancel-edit { background: #9ca3af; min-width: ${isMobile ? 'auto' : '100px'}; }
+        #edit-entry-modal #find-replace-btn { min-width: ${isMobile ? 'auto' : '120px'}; }
     `;
 
   if (!$('#edit-entry-modal-styles').length) {
@@ -3708,9 +4163,14 @@ function bindEditModalEvents(
     } catch (error) {
       console.error(isNewEntry ? '创建条目失败:' : '保存条目失败:', error);
       alert((isNewEntry ? '创建失败: ' : '保存失败: ') + error.message);
-      const originalText = isNewEntry ? '✨ 创建条目' : '💾 保存更改';
+      const originalText = isNewEntry ? '✨ 创建条目' : '💾 保存';
       $('#save-entry-changes').prop('disabled', false).text(originalText);
     }
+  });
+
+  // 查找替换按钮事件
+  $('#find-replace-btn').on('click', () => {
+    showFindReplaceDialog();
   });
 
   $('#cancel-edit').on('click', () => modal.remove());
@@ -3726,6 +4186,142 @@ function bindEditModalEvents(
   }
 
   modal.css('display', 'flex');
+}
+
+// 显示单个条目的查找替换对话框
+function showFindReplaceDialog() {
+  const $ = getJQuery();
+  const isDark = isDarkTheme();
+  const bgColor = isDark ? '#1a1a1a' : '#ffffff';
+  const textColor = isDark ? '#e0e0e0' : '#374151';
+  const borderColor = isDark ? '#374151' : '#e5e7eb';
+  const inputBg = isDark ? '#2d2d2d' : '#ffffff';
+  const inputBorder = isDark ? '#4b5563' : '#d1d5db';
+
+  // 移除已存在的对话框
+  $('#find-replace-modal').remove();
+
+  const modalHtml = `
+    <div id="find-replace-modal" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10003; display: flex; align-items: center; justify-content: center; padding: 20px;">
+      <div style="background: ${bgColor}; border-radius: 16px; padding: 24px; max-width: 500px; width: 100%; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
+        <div style="text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid ${borderColor};">
+          <h3 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700;">🔍 替换</h3>
+          <p style="margin: 0; font-size: 14px; color: ${
+            isDark ? '#9ca3af' : '#6b7280'
+          };">在当前条目内容中查找并替换文本</p>
+        </div>
+
+        <div style="margin-bottom: 20px;">
+          <div style="margin-bottom: 16px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: 500;">查找文本</label>
+            <input type="text" id="single-find" placeholder="要查找的文本" style="width: 100%; padding: 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; box-sizing: border-box; font-size: 14px;">
+          </div>
+          <div style="margin-bottom: 16px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: 500;">替换为</label>
+            <input type="text" id="single-replace" placeholder="替换后的文本" style="width: 100%; padding: 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; box-sizing: border-box; font-size: 14px;">
+          </div>
+          <div style="margin-bottom: 16px;">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer;">
+              <input type="checkbox" id="case-sensitive">
+              区分大小写
+            </label>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 12px; justify-content: center;">
+          <button id="apply-find-replace" style="padding: 12px 24px; background: #059669; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">✅ 替换</button>
+          <button id="cancel-find-replace" style="padding: 12px 24px; background: #6b7280; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">❌ 取消</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('body').append(modalHtml);
+
+  // 绑定事件
+  $('#apply-find-replace').on('click', () => {
+    const findText = $('#single-find').val();
+    const replaceText = $('#single-replace').val();
+    const caseSensitive = $('#case-sensitive').is(':checked');
+
+    if (!findText) {
+      alert('请输入要查找的文本');
+      return;
+    }
+
+    // 执行查找替换，但不关闭对话框
+    applyFindReplaceToCurrentEntry(findText, replaceText, caseSensitive);
+    // 不自动关闭对话框，让用户可以继续替换
+  });
+
+  $('#cancel-find-replace').on('click', () => {
+    $('#find-replace-modal').remove();
+  });
+
+  // 点击背景关闭
+  $('#find-replace-modal').on('click', function (e) {
+    if (e.target === this) {
+      $(this).remove();
+    }
+  });
+
+  // 自动聚焦到查找输入框
+  setTimeout(() => {
+    $('#single-find').focus();
+  }, 100);
+}
+
+// 对当前编辑的条目应用查找替换
+function applyFindReplaceToCurrentEntry(findText, replaceText, caseSensitive) {
+  const $ = getJQuery();
+  const contentTextarea = $('#edit-entry-content');
+
+  if (!contentTextarea.length) {
+    alert('未找到内容编辑区域');
+    return;
+  }
+
+  let content = contentTextarea.val();
+  let replacedCount = 0;
+
+  if (caseSensitive) {
+    // 区分大小写的替换
+    const regex = new RegExp(escapeRegExp(findText), 'g');
+    content = content.replace(regex, match => {
+      replacedCount++;
+      return replaceText;
+    });
+  } else {
+    // 不区分大小写的替换
+    const regex = new RegExp(escapeRegExp(findText), 'gi');
+    content = content.replace(regex, match => {
+      replacedCount++;
+      return replaceText;
+    });
+  }
+
+  // 更新文本区域的内容
+  contentTextarea.val(content);
+
+  // 显示替换结果
+  if (replacedCount > 0) {
+    if (window.toastr) {
+      toastr.success(`成功替换 ${replacedCount} 处文本`);
+    } else {
+      alert(`成功替换 ${replacedCount} 处文本`);
+    }
+  } else {
+    if (window.toastr) {
+      toastr.info('未找到要替换的文本');
+    } else {
+      alert('未找到要替换的文本');
+    }
+  }
+}
+
+// 转义正则表达式特殊字符
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function saveEntryChanges(apiInfo, presetName, originalEntry, updatedEntry) {
@@ -3893,8 +4489,10 @@ async function performTransfer(
 
       const existingOrderEntry = characterPromptOrder.order.find(o => o.identifier === existingPrompt.identifier);
       if (existingOrderEntry) {
-        existingOrderEntry.enabled = autoEnable;
+        // 对于现有条目，保持其原有的启用状态，不强制改变
+        // existingOrderEntry.enabled 保持不变
       } else {
+        // 如果在order中找不到，则添加并使用autoEnable设置
         characterPromptOrder.order.push({ identifier: existingPrompt.identifier, enabled: autoEnable });
       }
     } else {
@@ -3921,7 +4519,7 @@ async function performTransfer(
       characterPromptOrder.order.unshift(...newOrderEntries);
     } else if (insertPosition.startsWith('after-')) {
       const afterIndex = parseInt(insertPosition.replace('after-', ''));
-      // 使用 'include_disabled' 模式获取完整的参考列表，确保位置计算的一致性
+      // 始终使用完整列表来计算在prompt_order中的真实位置
       const referencePromptList = getTargetPromptsList(targetPreset, 'include_disabled');
 
       if (afterIndex >= 0 && afterIndex < referencePromptList.length) {
@@ -4214,6 +4812,808 @@ function recurse_into_deeper_spiral() {
     showAILoading(false);
   }
 }
+
+// ==================== 新增功能模块 ====================
+
+// QuickCopy模块已移除 - 复制功能已被"在此处新建"功能替代
+
+// 简单的重命名函数，用于替代QuickCopy.generateCopyName
+function generateCopyName(originalName) {
+  const copyPattern = /^(.+?)\s*(?:\(副本\s*(\d*)\))?$/;
+  const match = originalName.match(copyPattern);
+
+  if (match) {
+    const baseName = match[1];
+    const copyNum = match[2] ? parseInt(match[2]) + 1 : 1;
+    return `${baseName} (副本${copyNum > 1 ? copyNum : ''})`;
+  }
+  return `${originalName} (副本)`;
+}
+
+// 生成唯一标识符
+function generateIdentifier() {
+  return Date.now().toString(36) + Math.random().toString(36).substr(2);
+}
+
+// 2. 批量编辑功能
+const BatchEditor = {
+  // 批量修改角色
+  changeRole(entries, newRole) {
+    return entries.map(entry => ({ ...entry, role: newRole }));
+  },
+
+  // 批量调整注入深度
+  adjustDepth(entries, newDepth) {
+    return entries.map(entry => ({ ...entry, injection_depth: newDepth }));
+  },
+
+  // 批量启用/禁用
+  toggleEnabled(entries, enabled) {
+    return entries.map(entry => ({ ...entry, enabled }));
+  },
+
+  // 批量添加前缀
+  addPrefix(entries, prefix) {
+    return entries.map(entry => ({
+      ...entry,
+      content: `${prefix}\n${entry.content}`,
+    }));
+  },
+
+  // 批量添加后缀
+  addSuffix(entries, suffix) {
+    return entries.map(entry => ({
+      ...entry,
+      content: `${entry.content}\n${suffix}`,
+    }));
+  },
+
+  // 批量查找替换
+  findReplace(entries, findText, replaceText, caseSensitive = false) {
+    return entries.map(entry => {
+      let content = entry.content;
+      if (caseSensitive) {
+        // 区分大小写的替换
+        const regex = new RegExp(escapeRegExp(findText), 'g');
+        content = content.replace(regex, replaceText);
+      } else {
+        // 不区分大小写的替换
+        const regex = new RegExp(escapeRegExp(findText), 'gi');
+        content = content.replace(regex, replaceText);
+      }
+      return {
+        ...entry,
+        content: content,
+      };
+    });
+  },
+
+  // 批量重命名
+  batchRename(entries, pattern) {
+    return entries.map((entry, index) => ({
+      ...entry,
+      name: pattern
+        .replace('{original}', entry.name)
+        .replace('{index}', (index + 1).toString())
+        .replace('{role}', entry.role)
+        .replace('{depth}', entry.injection_depth.toString()),
+    }));
+  },
+
+  // 显示批量编辑对话框
+  showBatchEditDialog(selectedEntries, onApply) {
+    const $ = getJQuery();
+    const isDark = isDarkTheme();
+    const bgColor = isDark ? '#1a1a1a' : '#ffffff';
+    const textColor = isDark ? '#e0e0e0' : '#374151';
+    const borderColor = isDark ? '#374151' : '#e5e7eb';
+    const inputBg = isDark ? '#2d2d2d' : '#ffffff';
+    const inputBorder = isDark ? '#4b5563' : '#d1d5db';
+
+    // 移除已存在的对话框
+    $('#batch-edit-modal').remove();
+
+    const modalHtml = `
+      <div id="batch-edit-modal" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10002; display: flex; align-items: center; justify-content: center; padding: 20px;">
+        <div style="background: ${bgColor}; border-radius: 16px; padding: 24px; max-width: 600px; width: 100%; max-height: 80vh; overflow-y: auto; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
+          <div style="text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid ${borderColor};">
+            <h3 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700;">🔧 批量编辑条目</h3>
+            <p style="margin: 0; font-size: 14px; color: ${isDark ? '#9ca3af' : '#6b7280'};">选中了 ${
+      selectedEntries.length
+    } 个条目</p>
+          </div>
+
+          <div style="margin-bottom: 20px;">
+            <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600;">📝 基础属性</h4>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+              <div>
+                <label style="display: block; margin-bottom: 8px; font-weight: 500;">角色类型</label>
+                <select id="batch-role" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px;">
+                  <option value="">不修改</option>
+                  <option value="system">System</option>
+                  <option value="user">User</option>
+                  <option value="assistant">Assistant</option>
+                </select>
+              </div>
+              <div>
+                <label style="display: block; margin-bottom: 8px; font-weight: 500;">注入深度</label>
+                <input type="number" id="batch-depth" placeholder="不修改" min="0" max="100" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; box-sizing: border-box;">
+              </div>
+            </div>
+            <div>
+              <label style="display: block; margin-bottom: 8px; font-weight: 500;">启用状态</label>
+              <select id="batch-enabled" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px;">
+                <option value="">不修改</option>
+                <option value="true">启用</option>
+                <option value="false">禁用</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="margin-bottom: 20px;">
+            <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600;">✏️ 内容编辑</h4>
+            <div style="margin-bottom: 16px;">
+              <label style="display: block; margin-bottom: 8px; font-weight: 500;">添加前缀</label>
+              <textarea id="batch-prefix" placeholder="在所有条目内容前添加..." rows="2" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; resize: vertical; box-sizing: border-box;"></textarea>
+            </div>
+            <div style="margin-bottom: 16px;">
+              <label style="display: block; margin-bottom: 8px; font-weight: 500;">添加后缀</label>
+              <textarea id="batch-suffix" placeholder="在所有条目内容后添加..." rows="2" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; resize: vertical; box-sizing: border-box;"></textarea>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+              <div>
+                <label style="display: block; margin-bottom: 8px; font-weight: 500;">查找文本</label>
+                <input type="text" id="batch-find" placeholder="要替换的文本" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; box-sizing: border-box;">
+              </div>
+              <div>
+                <label style="display: block; margin-bottom: 8px; font-weight: 500;">替换为</label>
+                <input type="text" id="batch-replace" placeholder="替换后的文本" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; box-sizing: border-box;">
+              </div>
+            </div>
+            <div style="margin-top: 8px;">
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 14px;">
+                <input type="checkbox" id="batch-case-sensitive">
+                区分大小写
+              </label>
+            </div>
+          </div>
+
+          <div style="margin-bottom: 20px;">
+            <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600;">🏷️ 批量重命名</h4>
+            <div>
+              <label style="display: block; margin-bottom: 8px; font-weight: 500;">重命名模式</label>
+              <input type="text" id="batch-rename-pattern" placeholder="例如: {original}_修改版 或 条目{index}" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; box-sizing: border-box;">
+              <div style="margin-top: 4px; font-size: 12px; color: ${isDark ? '#9ca3af' : '#6b7280'};">
+                可用变量: {original}=原名称, {index}=序号, {role}=角色, {depth}=深度
+              </div>
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 12px; justify-content: center;">
+            <button id="apply-batch-edit" style="padding: 12px 24px; background: #059669; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">✅ 应用修改</button>
+            <button id="cancel-batch-edit" style="padding: 12px 24px; background: #6b7280; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">❌ 取消</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    $('body').append(modalHtml);
+
+    // 绑定事件
+    $('#apply-batch-edit').on('click', () => {
+      const modifications = {
+        role: $('#batch-role').val(),
+        depth: $('#batch-depth').val() ? parseInt($('#batch-depth').val()) : null,
+        enabled: $('#batch-enabled').val() ? $('#batch-enabled').val() === 'true' : null,
+        prefix: $('#batch-prefix').val().trim(),
+        suffix: $('#batch-suffix').val().trim(),
+        findText: $('#batch-find').val(),
+        replaceText: $('#batch-replace').val(),
+        caseSensitive: $('#batch-case-sensitive').is(':checked'),
+        renamePattern: $('#batch-rename-pattern').val().trim(),
+      };
+
+      // 应用修改但不关闭对话框，让用户可以继续修改
+      onApply(modifications);
+
+      // 显示成功提示
+      if (window.toastr) {
+        toastr.success('批量修改已应用');
+      } else {
+        alert('批量修改已应用');
+      }
+    });
+
+    $('#cancel-batch-edit').on('click', () => {
+      $('#batch-edit-modal').remove();
+    });
+
+    // 点击背景关闭
+    $('#batch-edit-modal').on('click', function (e) {
+      if (e.target === this) {
+        $(this).remove();
+      }
+    });
+  },
+
+  // 应用批量修改
+  applyBatchModifications(entries, modifications) {
+    let result = [...entries];
+
+    // 应用角色修改
+    if (modifications.role) {
+      result = this.changeRole(result, modifications.role);
+    }
+
+    // 应用深度修改
+    if (modifications.depth !== null) {
+      result = this.adjustDepth(result, modifications.depth);
+    }
+
+    // 应用启用状态修改
+    if (modifications.enabled !== null) {
+      result = this.toggleEnabled(result, modifications.enabled);
+    }
+
+    // 应用前缀
+    if (modifications.prefix) {
+      result = this.addPrefix(result, modifications.prefix);
+    }
+
+    // 应用后缀
+    if (modifications.suffix) {
+      result = this.addSuffix(result, modifications.suffix);
+    }
+
+    // 应用查找替换
+    if (modifications.findText && modifications.replaceText !== undefined) {
+      result = this.findReplace(result, modifications.findText, modifications.replaceText, modifications.caseSensitive);
+    }
+
+    // 应用重命名
+    if (modifications.renamePattern) {
+      result = this.batchRename(result, modifications.renamePattern);
+    }
+
+    return result;
+  },
+};
+
+// SmartPresetImporter模块已删除
+
+// 4. 快速预览和测试功能
+const QuickPreview = {
+  // 生成预设预览
+  generatePreview(entries, maxEntries = 5) {
+    // entries 参数已经是过滤后的启用条目，不需要再次过滤
+    const previewEntries = entries.slice(0, maxEntries);
+
+    return previewEntries
+      .map(entry => {
+        const roleIcon = { system: '🤖', user: '👤', assistant: '🎭' }[entry.role] || '📝';
+        const content = entry.content || '';
+        const preview = content.length > 100 ? content.substring(0, 100) + '...' : content;
+        return `${roleIcon} ${entry.name || '未命名'}\n${preview}`;
+      })
+      .join('\n\n' + '─'.repeat(50) + '\n\n');
+  },
+
+  // Token估算
+  estimateTokens(content) {
+    const chineseChars = (content.match(/[\u4e00-\u9fff]/g) || []).length;
+    const otherChars = content.length - chineseChars;
+    return Math.ceil(chineseChars / 1.5 + otherChars / 4);
+  },
+
+  // 预设效果预览
+  previewPresetEffect(presetData) {
+    // 使用 getOrderedPromptEntries 获取已启用的条目
+    const entries = getOrderedPromptEntries(presetData, 'default');
+    const totalTokens = entries.reduce((sum, entry) => sum + this.estimateTokens(entry.content || ''), 0);
+
+    return {
+      totalEntries: entries.length,
+      totalTokens,
+      preview: this.generatePreview(entries),
+      warnings: this.checkBasicWarnings(entries),
+    };
+  },
+
+  // 基础警告检查
+  checkBasicWarnings(entries) {
+    const warnings = [];
+
+    // 检查空条目
+    const emptyEntries = entries.filter(e => !e.content || !e.content.trim());
+    if (emptyEntries.length > 0) {
+      warnings.push(`发现 ${emptyEntries.length} 个空条目`);
+    }
+
+    // 检查重名条目
+    const names = entries.map(e => e.name).filter(Boolean);
+    const duplicateNames = names.filter((name, index) => names.indexOf(name) !== index);
+    if (duplicateNames.length > 0) {
+      warnings.push(`发现重名条目: ${[...new Set(duplicateNames)].join(', ')}`);
+    }
+
+    return warnings;
+  },
+
+  // 显示预览界面
+  showPreviewModal(apiInfo, presetName) {
+    const $ = getJQuery();
+    const isDark = isDarkTheme();
+    const bgColor = isDark ? '#1a1a1a' : '#ffffff';
+    const textColor = isDark ? '#e0e0e0' : '#374151';
+    const borderColor = isDark ? '#374151' : '#e5e7eb';
+    const sectionBg = isDark ? '#262626' : '#f9fafb';
+
+    try {
+      const presetData = getPresetDataFromManager(apiInfo, presetName);
+      const preview = this.previewPresetEffect(presetData);
+
+      // 移除已存在的预览
+      $('#preview-modal').remove();
+
+      const modalHtml = `
+        <div id="preview-modal" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10004; display: flex; align-items: center; justify-content: center; padding: 20px;">
+          <div style="background: ${bgColor}; border-radius: 16px; padding: 24px; max-width: 800px; width: 100%; max-height: 80vh; overflow-y: auto; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
+            <div style="text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid ${borderColor};">
+              <h3 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700;">📋 预设预览 - ${presetName}</h3>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px;">
+              <div style="padding: 16px; background: ${sectionBg}; border-radius: 8px; text-align: center;">
+                <div style="font-size: 24px; font-weight: 700; color: #059669;">${preview.totalEntries}</div>
+                <div style="font-size: 14px; color: ${isDark ? '#9ca3af' : '#6b7280'};">启用条目数</div>
+              </div>
+              <div style="padding: 16px; background: ${sectionBg}; border-radius: 8px; text-align: center;">
+                <div style="font-size: 24px; font-weight: 700; color: #3b82f6;">${preview.totalTokens}</div>
+                <div style="font-size: 14px; color: ${isDark ? '#9ca3af' : '#6b7280'};">预估Token</div>
+              </div>
+            </div>
+
+            ${
+              preview.warnings.length > 0
+                ? `
+              <div style="margin-bottom: 20px; padding: 16px; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px;">
+                <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: #92400e;">⚠️ 注意事项</h4>
+                ${preview.warnings
+                  .map(warning => `<div style="color: #92400e; margin-bottom: 4px;">• ${warning}</div>`)
+                  .join('')}
+              </div>
+            `
+                : ''
+            }
+
+            <div style="margin-bottom: 20px;">
+              <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600;">📝 预设内容预览</h4>
+              <div style="background: ${sectionBg}; border: 1px solid ${borderColor}; border-radius: 8px; padding: 16px; max-height: 400px; overflow-y: auto;">
+                <pre style="margin: 0; white-space: pre-wrap; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5;">${
+                  preview.preview
+                }</pre>
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 12px; justify-content: center;">
+              <button id="close-preview" style="padding: 12px 24px; background: #6b7280; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">关闭</button>
+            </div>
+          </div>
+        </div>
+      `;
+
+      $('body').append(modalHtml);
+
+      $('#close-preview').on('click', () => {
+        $('#preview-modal').remove();
+      });
+
+      // 点击背景关闭
+      $('#preview-modal').on('click', function (e) {
+        if (e.target === this) {
+          $(this).remove();
+        }
+      });
+    } catch (error) {
+      console.error('预览失败:', error);
+      alert('预览失败: ' + error.message);
+    }
+  },
+};
+
+// BatchCopy模块已完全移除
+
+// 5. 导入导出增强功能
+const ImportExportEnhancer = {
+  // 导出选中条目
+  exportSelectedEntries(selectedEntries, format = 'json') {
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-');
+    const filename = `selected_entries_${timestamp}`;
+
+    switch (format) {
+      case 'json':
+        this.downloadJSON(selectedEntries, `${filename}.json`);
+        break;
+      case 'csv':
+        this.downloadCSV(selectedEntries, `${filename}.csv`);
+        break;
+      case 'txt':
+        this.downloadTXT(selectedEntries, `${filename}.txt`);
+        break;
+    }
+  },
+
+  // 导出为JSON
+  downloadJSON(entries, filename) {
+    const jsonContent = JSON.stringify(entries, null, 2);
+    this.downloadFile(jsonContent, filename, 'application/json');
+  },
+
+  // 导出为CSV
+  downloadCSV(entries, filename) {
+    const headers = ['名称', '内容', '角色', '启用状态', '注入深度', '注入位置'];
+    const csvContent = [
+      headers.join(','),
+      ...entries.map(entry =>
+        [
+          `"${entry.name.replace(/"/g, '""')}"`,
+          `"${entry.content.replace(/"/g, '""')}"`,
+          entry.role,
+          entry.enabled ? '是' : '否',
+          entry.injection_depth,
+          entry.injection_position || 'relative',
+        ].join(','),
+      ),
+    ].join('\n');
+
+    this.downloadFile(csvContent, filename, 'text/csv');
+  },
+
+  // 导出为纯文本
+  downloadTXT(entries, filename) {
+    const txtContent = entries
+      .map(
+        entry =>
+          `【${entry.name}】\n` +
+          `角色: ${entry.role}\n` +
+          `状态: ${entry.enabled ? '启用' : '禁用'}\n` +
+          `深度: ${entry.injection_depth}\n` +
+          `内容:\n${entry.content}\n` +
+          `${'='.repeat(50)}\n`,
+      )
+      .join('\n');
+
+    this.downloadFile(txtContent, filename, 'text/plain');
+  },
+
+  // 通用下载函数
+  downloadFile(content, filename, mimeType) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
+
+  // 显示导出选项对话框
+  showExportDialog(selectedEntries) {
+    const $ = getJQuery();
+    const isDark = isDarkTheme();
+    const bgColor = isDark ? '#1a1a1a' : '#ffffff';
+    const textColor = isDark ? '#e0e0e0' : '#374151';
+    const borderColor = isDark ? '#374151' : '#e5e7eb';
+    const inputBg = isDark ? '#2d2d2d' : '#ffffff';
+    const inputBorder = isDark ? '#4b5563' : '#d1d5db';
+
+    // 移除已存在的对话框
+    $('#export-dialog').remove();
+
+    const dialogHtml = `
+      <div id="export-dialog" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10003; display: flex; align-items: center; justify-content: center; padding: 20px;">
+        <div style="background: ${bgColor}; border-radius: 16px; padding: 24px; max-width: 400px; width: 100%; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
+          <div style="text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid ${borderColor};">
+            <h3 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700;">📤 导出条目</h3>
+            <p style="margin: 0; font-size: 14px; color: ${isDark ? '#9ca3af' : '#6b7280'};">选择导出格式</p>
+          </div>
+
+          <div style="margin-bottom: 20px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: 600; font-size: 14px;">导出格式:</label>
+            <select id="export-format" style="width: 100%; padding: 12px; border: 1px solid ${inputBorder}; border-radius: 8px; background: ${inputBg}; color: ${textColor}; font-size: 14px;">
+              <option value="json">JSON 格式 (.json)</option>
+              <option value="csv">CSV 表格 (.csv)</option>
+              <option value="txt">纯文本 (.txt)</option>
+            </select>
+          </div>
+
+          <div style="display: flex; gap: 12px; justify-content: center;">
+            <button id="confirm-export" style="background: #059669; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px;">确认导出</button>
+            <button id="cancel-export" style="background: #9ca3af; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px;">取消</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    $('body').append(dialogHtml);
+
+    // 绑定事件
+    $('#confirm-export').on('click', () => {
+      const format = $('#export-format').val();
+      this.exportSelectedEntries(selectedEntries, format);
+      $('#export-dialog').remove();
+
+      if (window.toastr) {
+        toastr.success(`已导出 ${selectedEntries.length} 个条目为 ${format.toUpperCase()} 格式`);
+      } else {
+        alert(`已导出 ${selectedEntries.length} 个条目为 ${format.toUpperCase()} 格式`);
+      }
+    });
+
+    $('#cancel-export').on('click', () => {
+      $('#export-dialog').remove();
+    });
+
+    // 点击背景关闭
+    $('#export-dialog').on('click', function (e) {
+      if (e.target === this) {
+        $(this).remove();
+      }
+    });
+  },
+
+  // 批量导入条目
+  // 批量导入条目（新增“选择插入位置”）
+  async importEntries(file, targetPreset, apiInfo) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async e => {
+        try {
+          const content = e.target.result;
+          let entries;
+
+          if (file.name.endsWith('.json')) {
+            entries = JSON.parse(content);
+          } else if (file.name.endsWith('.csv')) {
+            entries = this.parseCSV(content);
+          } else {
+            throw new Error('不支持的文件格式，请使用 JSON 或 CSV 文件');
+          }
+
+          // 弹出插入位置选择
+          const insertPosition = await this.showInsertPositionDialog(targetPreset);
+
+          await this.processImportedEntries(entries, targetPreset, apiInfo, insertPosition);
+
+          // 立即刷新界面显示新导入的条目
+          if (typeof loadAndDisplayEntries === 'function') {
+            loadAndDisplayEntries(apiInfo);
+          }
+
+          if (window.toastr) {
+            toastr.success(`成功导入 ${entries.length} 个条目`);
+          } else {
+            alert(`成功导入 ${entries.length} 个条目`);
+          }
+
+          resolve();
+        } catch (error) {
+          if (window.toastr) {
+            toastr.error('导入失败: ' + error.message);
+          } else {
+            alert('导入失败: ' + error.message);
+          }
+          reject(error);
+        }
+      };
+      reader.onerror = () => reject(new Error('文件读取失败'));
+      reader.readAsText(file);
+    });
+  },
+  // 解析CSV文件
+  parseCSV(csvContent) {
+    const lines = csvContent.split('\n').filter(line => line.trim());
+    if (lines.length < 2) throw new Error('CSV文件格式错误');
+
+    const headers = lines[0].split(',');
+
+    return lines.slice(1).map(line => {
+      const values = this.parseCSVLine(line);
+      return {
+        name: values[0] || '未命名条目',
+        content: values[1] || '',
+        role: values[2] || 'system',
+        enabled: values[3] === '是',
+        injection_depth: parseInt(values[4]) || 4,
+        injection_position: values[5] || 'relative',
+        identifier: this.generateIdentifier(),
+      };
+    });
+  },
+
+  // 解析CSV行（处理引号内的逗号）
+  parseCSVLine(line) {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i++; // 跳过下一个引号
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        result.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+
+    result.push(current);
+    return result;
+  },
+
+  // 新增：导入位置选择对话框
+  async showInsertPositionDialog(targetPreset) {
+    return new Promise(resolve => {
+      const $ = getJQuery();
+      const isDark = isDarkTheme();
+      const bgColor = isDark ? '#1a1a1a' : '#ffffff';
+      const textColor = isDark ? '#e0e0e0' : '#374151';
+      const borderColor = isDark ? '#374151' : '#e5e7eb';
+      const sectionBg = isDark ? '#262626' : '#f9fafb';
+
+      const options = getTargetPromptsList(targetPreset, 'include_disabled') || [];
+      const selectOptions = options
+        .map((e, i) => `<option value="${i}">${i + 1}. ${e.name || e.identifier || e.id}</option>`)
+        .join('');
+
+      $('#import-position-modal').remove();
+
+      const html = `
+       <div id="import-position-modal" style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(8px); z-index: 10006; display: flex; align-items: center; justify-content: center; padding: 20px;">
+         <div style="background: ${bgColor}; color: ${textColor}; border-radius: 16px; padding: 20px; width: 100%; max-width: 520px; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
+           <div style="margin-bottom: 12px; border-bottom: 1px solid ${borderColor}; padding-bottom: 8px;">
+             <h3 style="margin: 0; font-weight: 700; font-size: 18px;">选择导入条目插入位置</h3>
+             <div style="font-size: 12px; color: ${
+               isDark ? '#9ca3af' : '#6b7280'
+             }; margin-top: 4px;">目标预设：${targetPreset}</div>
+           </div>
+           <div style="display: grid; gap: 10px; background: ${sectionBg}; border: 1px solid ${borderColor}; border-radius: 8px; padding: 12px;">
+             <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="pos" value="top"> 插入到顶部</label>
+             <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="pos" value="bottom" checked> 插入到底部</label>
+             <label style="display:flex;align-items:center;gap:8px;">
+               <input type="radio" name="pos" value="after"> 插入到以下条目之后
+             </label>
+             <select id="import-after-select" style="width:100%; padding: 8px 12px; border:1px solid ${borderColor}; border-radius: 6px;" ${
+        options.length ? '' : 'disabled'
+      }>
+               ${selectOptions || '<option value="-1" disabled>(无可选条目)</option>'}
+             </select>
+           </div>
+           <div style="display:flex; gap:10px; justify-content:center; margin-top: 14px;">
+             <button id="import-pos-ok" style="padding:8px 16px; border:none; border-radius:8px; background:#059669; color:#fff; font-weight:600;">确定</button>
+             <button id="import-pos-cancel" style="padding:8px 16px; border:none; border-radius:8px; background:#6b7280; color:#fff; font-weight:600;">取消</button>
+           </div>
+         </div>
+       </div>
+     `;
+
+      $('body').append(html);
+
+      const close = () => $('#import-position-modal').remove();
+
+      $('#import-pos-ok').on('click', () => {
+        const val = $('input[name="pos"]:checked').val();
+        if (val === 'top') {
+          close();
+          resolve('top');
+        } else if (val === 'bottom') {
+          close();
+          resolve('bottom');
+        } else {
+          const idx = parseInt($('#import-after-select').val(), 10);
+          close();
+          resolve(Number.isNaN(idx) ? 'bottom' : `after-${idx}`);
+        }
+      });
+      $('#import-pos-cancel').on('click', () => {
+        close();
+        resolve('bottom');
+      });
+      $('#import-position-modal').on('click', function (e) {
+        if (e.target === this) {
+          close();
+          resolve('bottom');
+        }
+      });
+    });
+  },
+
+  // 处理导入的条目（支持选择插入位置）
+  async processImportedEntries(entries, targetPreset, apiInfo, insertPosition = 'bottom') {
+    const presetData = getPresetDataFromManager(apiInfo, targetPreset);
+
+    // 确保预设数据结构完整
+    if (!presetData.prompts) presetData.prompts = [];
+    const characterPromptOrder = getOrCreateDummyCharacterPromptOrder(presetData);
+
+    // 确保条目有必要的字段
+    const processedEntries = entries.map(entry => ({
+      ...entry,
+      identifier: entry.identifier || this.generateIdentifier(),
+      injection_depth: entry.injection_depth || 4,
+      injection_position: entry.injection_position || 'relative',
+      role: entry.role || 'system',
+      // 确保新版本字段存在
+      injection_order: entry.injection_order ?? NEW_FIELD_DEFAULTS.injection_order,
+      injection_trigger: Array.isArray(entry.injection_trigger)
+        ? [...entry.injection_trigger]
+        : [...NEW_FIELD_DEFAULTS.injection_trigger],
+      forbid_overrides: entry.forbid_overrides || false,
+      system_prompt: entry.system_prompt || false,
+      marker: entry.marker || false,
+    }));
+
+    // 添加到 prompts 数组（prompts 顺序非关键，以 prompt_order 决定实际顺序）
+    presetData.prompts.push(...processedEntries);
+
+    // 生成 order 条目（默认启用）
+    const newOrderEntries = processedEntries.map(entry => ({
+      identifier: entry.identifier,
+      enabled: entry.enabled !== undefined ? entry.enabled : true,
+    }));
+
+    if (insertPosition === 'top') {
+      characterPromptOrder.order.unshift(...newOrderEntries);
+    } else if (typeof insertPosition === 'string' && insertPosition.startsWith('after-')) {
+      const afterIndex = parseInt(insertPosition.replace('after-', ''));
+      const referencePromptList = getTargetPromptsList(targetPreset, 'include_disabled');
+      if (afterIndex >= 0 && afterIndex < referencePromptList.length) {
+        const targetPrompt = referencePromptList[afterIndex];
+        const orderIndex = characterPromptOrder.order.findIndex(e => e.identifier === targetPrompt.identifier);
+        if (orderIndex !== -1) {
+          characterPromptOrder.order.splice(orderIndex + 1, 0, ...newOrderEntries);
+        } else {
+          characterPromptOrder.order.push(...newOrderEntries);
+        }
+      } else {
+        characterPromptOrder.order.push(...newOrderEntries);
+      }
+    } else {
+      characterPromptOrder.order.push(...newOrderEntries);
+    }
+
+    // 保存预设
+    await apiInfo.presetManager.savePreset(targetPreset, presetData);
+  },
+  // 生成唯一标识符
+  generateIdentifier() {
+    return Date.now().toString(36) + Math.random().toString(36).substr(2);
+  },
+
+  // 获取当前选中的条目
+  getSelectedEntries() {
+    // 检查当前显示的是哪个容器
+    const $ = getJQuery();
+    if ($('#single-container').is(':visible')) {
+      return getSelectedEntriesForSide('single');
+    } else {
+      // 合并左右两侧的选中条目
+      const leftSelected = getSelectedEntriesForSide('left');
+      const rightSelected = getSelectedEntriesForSide('right');
+      return [...leftSelected, ...rightSelected];
+    }
+  },
+};
 
 function initPresetTransferIntegration() {
   try {
