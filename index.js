@@ -1,6 +1,6 @@
 // @ts-nocheck
 // Author: discord千秋梦
-// Version: v1.6
+// Version: v1.7
 // 重构说明：
 // - 新增"在此处新建"功能
 // - 添加了导入导出词条功能以及位置选择功能，允许用户指定条目插入位置
@@ -465,6 +465,22 @@ function getOrderedPromptEntries(presetData, displayMode = 'default') {
   const characterPromptOrder = presetData.prompt_order?.find(order => order.character_id === dummyCharacterId);
   const orderMap = new Map(characterPromptOrder?.order.map(o => [o.identifier, o.enabled]));
 
+  // 特殊处理：显示未插入提示词模式
+  if (displayMode === 'show_uninserted') {
+    const allPrompts = getPromptEntries(presetData);
+    const insertedIdentifiers = new Set(characterPromptOrder?.order.map(o => o.identifier) || []);
+
+    // 返回所有未在prompt_order中的条目
+    return allPrompts
+      .filter(prompt => !insertedIdentifiers.has(prompt.identifier))
+      .map((entry, index) => ({
+        ...entry,
+        enabled: false,
+        isUninserted: true,
+        orderIndex: index,
+      }));
+  }
+
   // If no specific order is defined, fall back to returning all prompts.
   if (!characterPromptOrder) {
     return getPromptEntries(presetData).map(entry => ({ ...entry, enabled: false }));
@@ -896,6 +912,18 @@ function updateModalTheme() {
   // 更新主题按钮
   updateThemeButton();
 
+  // 重新应用字体大小设置
+  const savedSize = localStorage.getItem('preset-transfer-font-size');
+  if (savedSize) {
+    const fontSize = parseInt(savedSize);
+    $('#font-size-slider').val(fontSize);
+    const modal = $('#preset-transfer-modal')[0];
+    if (modal) {
+      modal.style.setProperty('--pt-font-size', fontSize + 'px');
+    }
+    $('#font-size-display').text(fontSize + 'px');
+  }
+
   // 如果条目已加载，则重新加载它们以应用主题
   if ($('#entries-container').is(':visible')) {
     const apiInfo = getCurrentApiInfo();
@@ -988,8 +1016,13 @@ function createTransferUI() {
                         <span>🔄</span>
                         <h2>预设条目转移工具</h2>
                     </div>
+                    <div class="font-size-control">
+                        <label for="font-size-slider" title="调节字体大小">🔤</label>
+                        <input type="range" id="font-size-slider" min="12" max="24" value="16" step="1">
+                        <span id="font-size-display">16px</span>
+                    </div>
                     <div class="version-info">
-                        <span class="author">V1.6 by discord千秋梦</span>
+                        <span class="author">V1.7 by discord千秋梦</span>
                     </div>
                 </div>
                 <div class="preset-selection">
@@ -1059,6 +1092,7 @@ function createTransferUI() {
                                         <select id="single-display-mode" class="display-mode-select">
                                             <option value="default">仅显示已启用</option>
                                             <option value="include_disabled">显示全部</option>
+                                            <option value="show_uninserted">显示未插入提示词（慎选，顺序是完全打乱的，乱用会导致转移位置混乱）</option>
                                         </select>
                                     </div>
                                 </div>
@@ -1068,6 +1102,8 @@ function createTransferUI() {
                             <div class="side-actions">
                                 <button id="single-edit" disabled>✏️ 编辑</button>
                                 <button id="single-delete" disabled>🗑️ 删除</button>
+                                <button id="single-copy" disabled>📋 复制</button>
+                                <button id="single-move" disabled>🔄 移动</button>
                             </div>
                         </div>
                     </div>
@@ -1089,6 +1125,7 @@ function createTransferUI() {
                                         <select id="left-display-mode" class="display-mode-select">
                                             <option value="default">仅显示已启用</option>
                                             <option value="include_disabled">显示全部</option>
+                                            <option value="show_uninserted">显示未插入提示词（慎选，顺序是完全打乱的，乱用会导致转移位置混乱）</option>
                                         </select>
                                     </div>
                                     <div class="control-row">
@@ -1106,6 +1143,7 @@ function createTransferUI() {
                             <div class="side-actions">
                                 <button id="left-edit" disabled>✏️ 编辑</button>
                                 <button id="left-delete" disabled>🗑️ 删除</button>
+                                <button id="left-copy" disabled>📋 复制</button>
                                 <button id="transfer-to-right" disabled>➡️ 转移</button>
                             </div>
 
@@ -1127,6 +1165,7 @@ function createTransferUI() {
                                         <select id="right-display-mode" class="display-mode-select">
                                             <option value="default">仅显示已启用</option>
                                             <option value="include_disabled">显示全部</option>
+                                            <option value="show_uninserted">显示未插入提示词（慎选，顺序是完全打乱的，乱用会导致转移位置混乱）</option>
                                         </select>
                                     </div>
                                     <div class="control-row">
@@ -1147,6 +1186,7 @@ function createTransferUI() {
                             <div class="side-actions">
                                 <button id="right-edit" disabled>✏️ 编辑</button>
                                 <button id="right-delete" disabled>🗑️ 删除</button>
+                                <button id="right-copy" disabled>📋 复制</button>
                                 <button id="transfer-to-left" disabled>⬅️ 转移</button>
                             </div>
 
@@ -1428,6 +1468,7 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
 
   const styles = `
         #preset-transfer-modal {
+            --pt-font-size: 16px;
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
             background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
             z-index: 10000; display: flex; align-items: ${isMobile ? 'flex-start' : 'center'};
@@ -1446,25 +1487,83 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             animation: pt-slideUp 0.3s ease-out;
             transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
         }
+        #preset-transfer-modal .transfer-modal-content,
+        #preset-transfer-modal .transfer-modal-content *,
+        #preset-transfer-modal h1,
+        #preset-transfer-modal h2,
+        #preset-transfer-modal h3,
+        #preset-transfer-modal h4,
+        #preset-transfer-modal h5,
+        #preset-transfer-modal .modal-header h2,
+        #preset-transfer-modal .entry-name,
+        #preset-transfer-modal .entry-content,
+        #preset-transfer-modal button,
+        #preset-transfer-modal select,
+        #preset-transfer-modal input,
+        #preset-transfer-modal label,
+        #preset-transfer-modal span,
+        #preset-transfer-modal div {
+            font-size: var(--pt-font-size) !important;
+        }
         #preset-transfer-modal .modal-header {
             text-align: center; margin-bottom: ${isMobile ? '24px' : '28px'};
             padding-bottom: ${isMobile ? '18px' : '22px'}; border-bottom: 1px solid ${borderColor}; position: relative;
         }
         #preset-transfer-modal .theme-toggle-btn {
-            position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+            position: absolute; left: 0;
+            top: 0; /* 主题按钮移到最上方 */
             background: rgba(${isDark ? '255,255,255' : '0,0,0'}, 0.1); border: none;
-            border-radius: 50%; width: ${isMobile ? '40px' : '36px'}; height: ${isMobile ? '40px' : '36px'};
-            font-size: ${isMobile ? '18px' : '16px'}; cursor: pointer;
+            border-radius: 50%; width: ${isMobile ? '32px' : '36px'}; height: ${isMobile ? '32px' : '36px'};
+            font-size: ${isMobile ? '14px' : '16px'}; cursor: pointer;
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); display: flex; align-items: center; justify-content: center;
             backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
         #preset-transfer-modal .theme-toggle-btn:hover {
             background: rgba(${isDark ? '255,255,255' : '0,0,0'}, 0.2);
-            transform: translateY(-50%) scale(1.05);
+            transform: scale(1.05);
         }
         #preset-transfer-modal .theme-toggle-btn:active {
-            transform: translateY(-50%) scale(0.98);
+            transform: scale(0.98);
+        }
+        #preset-transfer-modal .font-size-control {
+            position: absolute; left: 0;
+            top: ${isMobile ? '45px' : '42px'}; /* 字体控制器移到主题按钮下方 */
+            display: flex; align-items: center; gap: ${isMobile ? '6px' : '8px'};
+            background: rgba(${isDark ? '255,255,255' : '0,0,0'}, 0.1);
+            border-radius: ${isMobile ? '16px' : '20px'};
+            padding: ${isMobile ? '4px 8px' : '6px 12px'};
+            backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            transform: ${isMobile ? 'scale(0.85)' : 'scale(1)'};
+            transform-origin: left top;
+            height: ${isMobile ? '24px' : '32px'};
+        }
+        #preset-transfer-modal .font-size-control label {
+            font-size: ${isMobile ? '14px' : '16px'}; cursor: pointer; margin: 0;
+        }
+        #preset-transfer-modal #font-size-slider {
+            width: ${isMobile ? '60px' : '80px'}; height: 4px;
+            background: rgba(${isDark ? '255,255,255' : '0,0,0'}, 0.2);
+            border-radius: 2px; outline: none; cursor: pointer;
+            -webkit-appearance: none; appearance: none;
+        }
+        #preset-transfer-modal #font-size-slider::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none;
+            width: ${isMobile ? '14px' : '16px'}; height: ${isMobile ? '14px' : '16px'};
+            background: ${isDark ? '#60a5fa' : '#3b82f6'};
+            border-radius: 50%; cursor: pointer;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        #preset-transfer-modal #font-size-slider::-moz-range-thumb {
+            width: ${isMobile ? '14px' : '16px'}; height: ${isMobile ? '14px' : '16px'};
+            background: ${isDark ? '#60a5fa' : '#3b82f6'};
+            border-radius: 50%; cursor: pointer; border: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        #preset-transfer-modal #font-size-display {
+            font-size: ${isMobile ? '10px' : '12px'}; font-weight: 600; color: ${textColor};
+            min-width: ${isMobile ? '28px' : '32px'}; text-align: center;
         }
         #preset-transfer-modal .modal-header > div:first-of-type {
             display: flex; align-items: center; justify-content: center;
@@ -1789,21 +1888,29 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             flex-wrap: wrap; justify-content: center;
         }
         #preset-transfer-modal .side-actions button {
-            padding: ${isMobile ? '8px 12px' : '6px 10px'}; border: none; color: #ffffff;
-            border-radius: 8px; cursor: pointer; font-size: ${isMobile ? '11px' : '11px'};
-            font-weight: 600; transition: background-color 0.2s ease, opacity 0.2s ease;
-            ${isMobile ? 'min-width: 60px;' : ''}
+            padding: ${isMobile ? '10px 14px' : '8px 12px'}; border: none; color: #ffffff;
+            border-radius: 8px; cursor: pointer; font-size: ${isMobile ? '12px' : '12px'};
+            font-weight: 700; transition: all 0.2s ease;
+            ${isMobile ? 'min-width: 70px;' : 'min-width: 65px;'}
+            text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
             transform: translateZ(0); /* 启用硬件加速 */
-            will-change: background-color, opacity; /* 优化动画性能 */
+            will-change: background-color, opacity, transform; /* 优化动画性能 */
         }
         #preset-transfer-modal .side-actions button:hover {
             opacity: 0.9;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
         }
         #preset-transfer-modal .side-actions button:active {
             opacity: 0.8;
+            transform: translateY(0px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
         }
         #preset-transfer-modal .side-actions button[id$="-edit"] { background: #059669; }
         #preset-transfer-modal .side-actions button[id$="-delete"] { background: #dc2626; }
+        #preset-transfer-modal .side-actions button[id$="-copy"] { background: #f59e0b; }
+        #preset-transfer-modal .side-actions button[id$="-move"] { background: #8b5cf6; }
         #preset-transfer-modal .side-actions button[id^="transfer-"] { background: #2563eb; }
         #preset-transfer-modal .side-controls .selection-btn {
             background: ${isDark ? '#4b5563' : '#6b7280'}; padding: ${isMobile ? '6px 8px' : '4px 8px'};
@@ -1950,10 +2057,28 @@ function bindTransferEvents(apiInfo, modal) {
     });
   }
 
+  // 字体大小调节功能
+  function adjustFontSize(size) {
+    const modal = $('#preset-transfer-modal')[0];
+    if (modal) {
+      modal.style.setProperty('--pt-font-size', size + 'px');
+    }
+    $('#font-size-display').text(size + 'px');
+    localStorage.setItem('preset-transfer-font-size', size);
+  }
+
+  function loadFontSize() {
+    const savedSize = localStorage.getItem('preset-transfer-font-size');
+    const fontSize = savedSize ? parseInt(savedSize) : 16;
+    $('#font-size-slider').val(fontSize);
+    adjustFontSize(fontSize);
+  }
+
   // 初始化
   resetInterface();
   applyStoredSettings();
   updateThemeButton();
+  loadFontSize();
 
   // 主题切换
   $('#theme-toggle-btn').on('click', function (e) {
@@ -1961,6 +2086,12 @@ function bindTransferEvents(apiInfo, modal) {
     e.stopPropagation();
     toggleTransferToolTheme();
     setTimeout(() => updateModalTheme(), 150);
+  });
+
+  // 字体大小调节
+  $('#font-size-slider').on('input', function () {
+    const size = parseInt($(this).val());
+    adjustFontSize(size);
   });
 
   // 获取当前预设按钮事件
@@ -2029,6 +2160,7 @@ function bindTransferEvents(apiInfo, modal) {
 
   $('#left-edit').on('click', () => editSelectedEntry(apiInfo, 'left'));
   $('#left-delete').on('click', () => deleteSelectedEntries(apiInfo, 'left'));
+  $('#left-copy').on('click', () => simpleCopyEntries('left', apiInfo));
   $('#transfer-to-right').on('click', () => startTransferMode(apiInfo, 'left', 'right'));
 
   // 右侧控制
@@ -2045,6 +2177,7 @@ function bindTransferEvents(apiInfo, modal) {
 
   $('#right-edit').on('click', () => editSelectedEntry(apiInfo, 'right'));
   $('#right-delete').on('click', () => deleteSelectedEntries(apiInfo, 'right'));
+  $('#right-copy').on('click', () => simpleCopyEntries('right', apiInfo));
   $('#transfer-to-left').on('click', () => startTransferMode(apiInfo, 'right', 'left'));
   $('#compare-entries').on('click', () => showCompareModal(apiInfo));
 
@@ -2060,6 +2193,8 @@ function bindTransferEvents(apiInfo, modal) {
 
   $('#single-edit').on('click', () => editSelectedEntry(apiInfo, 'single'));
   $('#single-delete').on('click', () => deleteSelectedEntries(apiInfo, 'single'));
+  $('#single-copy').on('click', () => simpleCopyEntries('single', apiInfo));
+  $('#single-move').on('click', () => startMoveMode('single', apiInfo));
 
   $('#close-modal').on('click', () => modal.remove());
   modal.on('click', e => {
@@ -2286,7 +2421,9 @@ function displayEntries(entries, side) {
              <div style="flex: 1; ${isMobile ? 'min-width: 0;' : ''}">
                  <div class="entry-name" style="font-weight: 600; color: ${entryTextColor}; font-size: ${
             isSmallScreen ? '11px' : isMobile ? '11px' : '13px'
-          }; word-break: break-word; line-height: 1.2;">${entry.name}</div>
+          }; word-break: break-word; line-height: 1.2;">${entry.name}${
+            entry.isUninserted ? ' <span style="color: #f59e0b; font-size: 10px;">🔸未插入</span>' : ''
+          }</div>
                  ${
                    isMobile
                      ? ''
@@ -2331,6 +2468,8 @@ function displayEntries(entries, side) {
             executeTransferToPosition(window.transferMode.apiInfo, window.transferMode.fromSide, itemSide, position);
           } else if (window.newEntryMode && window.newEntryMode.side === itemSide) {
             executeNewEntryAtPosition(window.newEntryMode.apiInfo, itemSide, position);
+          } else if (window.moveMode && window.moveMode.side === itemSide) {
+            executeMoveToPosition(window.moveMode.apiInfo, itemSide, null, position);
           }
           return;
         }
@@ -2362,6 +2501,14 @@ function displayEntries(entries, side) {
           const fullList = getTargetPromptsList(targetPreset, 'include_disabled');
           const realIndex = fullList.findIndex(entry => entry.identifier === identifier);
           executeNewEntryAtPosition(window.newEntryMode.apiInfo, itemSide, realIndex >= 0 ? realIndex : index);
+          return;
+        }
+
+        // 移动模式下的目标条目点击逻辑
+        if (window.moveMode && window.moveMode.side === itemSide) {
+          const index = parseInt($item.data('index'));
+          const identifier = $item.data('identifier');
+          executeMoveToPosition(window.moveMode.apiInfo, itemSide, identifier, index);
           return;
         }
 
@@ -2456,6 +2603,7 @@ function updatePanelButtons(side) {
   $(`#${side}-selection-count`).text(`已选择 ${selected}/${total}`);
   $(`#${side}-edit`).prop('disabled', selected === 0);
   $(`#${side}-delete`).prop('disabled', selected === 0);
+  $(`#${side}-copy`).prop('disabled', selected === 0);
 
   // 更新增强功能按钮的状态
   $(`#${side}-export-btn`).prop('disabled', selected === 0);
@@ -2464,6 +2612,8 @@ function updatePanelButtons(side) {
     $('#transfer-to-right').prop('disabled', selected === 0 || !$('#right-preset').val());
   } else if (side === 'right') {
     $('#transfer-to-left').prop('disabled', selected === 0 || !$('#left-preset').val());
+  } else if (side === 'single') {
+    $(`#${side}-move`).prop('disabled', selected === 0);
   }
 }
 
@@ -2885,10 +3035,17 @@ function executeNewEntryAtPosition(apiInfo, side, targetPosition) {
   createEditEntryModal(apiInfo, presetName, defaultEntry, insertPosition, autoEnable, side, null, displayMode);
 }
 
+// HTML转义函数
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 function highlightDiff(base, compare) {
   const t1 = base || '';
   const t2 = compare || '';
-  if (t1 === t2) return t2;
+  if (t1 === t2) return escapeHtml(t2);
 
   const len1 = t1.length;
   const len2 = t2.length;
@@ -2905,11 +3062,11 @@ function highlightDiff(base, compare) {
   }
 
   return (
-    t2.substring(0, start) +
+    escapeHtml(t2.substring(0, start)) +
     '<span class="diff-highlight">' +
-    t2.substring(start, end2) +
+    escapeHtml(t2.substring(start, end2)) +
     '</span>' +
-    t2.substring(end2)
+    escapeHtml(t2.substring(end2))
   );
 }
 
@@ -3129,7 +3286,7 @@ function createCompareDetailHtml(side, presetName, entry, otherEntry) {
             <div class="detail-row">
                 <span class="label">内容:</span>
                 <div class="content-preview ${content !== otherContent ? 'different' : ''}">
-                    ${content !== otherContent ? highlightDiff(otherContent, content) : content}
+                    ${content !== otherContent ? highlightDiff(otherContent, content) : escapeHtml(content)}
                 </div>
             </div>
         </div>
@@ -4833,6 +4990,183 @@ function generateCopyName(originalName) {
 // 生成唯一标识符
 function generateIdentifier() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
+}
+
+// 简化的复制功能
+async function simpleCopyEntries(side, apiInfo) {
+  const $ = getJQuery();
+  const selectedEntries = getSelectedEntries(side);
+  const presetName = getPresetNameForSide(side);
+
+  if (selectedEntries.length === 0) {
+    alert('请选择要复制的条目');
+    return;
+  }
+
+  if (!presetName) {
+    alert('无法确定目标预设');
+    return;
+  }
+
+  try {
+    const presetData = getPresetDataFromManager(apiInfo, presetName);
+    if (!presetData.prompts) presetData.prompts = [];
+
+    const characterPromptOrder = getOrCreateDummyCharacterPromptOrder(presetData);
+    const orderMap = new Map(characterPromptOrder.order.map((o, i) => [o.identifier, i]));
+
+    // 为每个选中的条目创建副本并插入到原条目下方
+    // 按照order中的位置倒序处理，避免索引偏移问题
+    const sortedEntries = selectedEntries
+      .map(entry => ({
+        entry,
+        orderIndex: orderMap.get(entry.identifier),
+      }))
+      .filter(item => item.orderIndex !== undefined)
+      .sort((a, b) => b.orderIndex - a.orderIndex); // 倒序排列
+
+    // 处理有order位置的条目
+    for (const { entry, orderIndex } of sortedEntries) {
+      const copyEntry = {
+        ...entry,
+        identifier: generateIdentifier(),
+        name: entry.name + '副本',
+      };
+
+      // 添加到prompts数组
+      presetData.prompts.push(copyEntry);
+
+      // 插入到原条目下方
+      characterPromptOrder.order.splice(orderIndex + 1, 0, {
+        identifier: copyEntry.identifier,
+        enabled: true,
+      });
+    }
+
+    // 处理没有order位置的条目（添加到末尾）
+    for (const entry of selectedEntries) {
+      if (orderMap.get(entry.identifier) === undefined) {
+        const copyEntry = {
+          ...entry,
+          identifier: generateIdentifier(),
+          name: entry.name + '副本',
+        };
+
+        presetData.prompts.push(copyEntry);
+        characterPromptOrder.order.push({
+          identifier: copyEntry.identifier,
+          enabled: true,
+        });
+      }
+    }
+
+    await apiInfo.presetManager.savePreset(presetName, presetData);
+    console.log(`成功复制 ${selectedEntries.length} 个条目`);
+
+    // 刷新界面
+    loadAndDisplayEntries(apiInfo);
+  } catch (error) {
+    console.error('复制失败:', error);
+    alert('复制失败: ' + error.message);
+  }
+}
+
+// 简化的移动功能
+function startMoveMode(side, apiInfo) {
+  const $ = getJQuery();
+  const selectedEntries = getSelectedEntries(side);
+  const presetName = getPresetNameForSide(side);
+
+  if (selectedEntries.length === 0) {
+    alert('请选择要移动的条目');
+    return;
+  }
+
+  if (!presetName) {
+    alert('无法确定预设');
+    return;
+  }
+
+  // 设置移动模式
+  window.moveMode = {
+    apiInfo: apiInfo,
+    side: side,
+    presetName: presetName,
+    selectedEntries: selectedEntries,
+  };
+
+  // 更新UI提示
+  alert(
+    `移动模式已激活！请点击${
+      side === 'single' ? '预设' : side === 'left' ? '左侧' : '右侧'
+    }面板中的条目来选择插入位置。`,
+  );
+
+  // 高亮目标面板
+  $(`#${side}-side, #${side}-container`).addClass('move-target');
+}
+
+// 执行移动到指定位置
+async function executeMoveToPosition(apiInfo, side, targetIdentifier, targetIndex) {
+  const $ = getJQuery();
+  let selectedEntries, presetName;
+
+  // 如果是从移动模式调用，使用moveMode的数据；否则直接获取
+  if (window.moveMode) {
+    selectedEntries = window.moveMode.selectedEntries;
+    presetName = window.moveMode.presetName;
+  } else {
+    selectedEntries = getSelectedEntries(side);
+    presetName = getPresetNameForSide(side);
+  }
+
+  try {
+    const presetData = getPresetDataFromManager(apiInfo, presetName);
+    if (!presetData.prompts) presetData.prompts = [];
+
+    const characterPromptOrder = getOrCreateDummyCharacterPromptOrder(presetData);
+
+    // 移除选中条目的order条目
+    const selectedIdentifiers = new Set(selectedEntries.map(e => e.identifier));
+    characterPromptOrder.order = characterPromptOrder.order.filter(o => !selectedIdentifiers.has(o.identifier));
+
+    // 确定插入位置
+    let insertIndex;
+    if (targetIndex === 'top') {
+      insertIndex = 0; // 插入到顶部
+    } else if (targetIndex === 'bottom') {
+      insertIndex = characterPromptOrder.order.length; // 插入到底部
+    } else {
+      // 找到目标位置（原有逻辑）
+      const targetOrderIndex = characterPromptOrder.order.findIndex(o => o.identifier === targetIdentifier);
+      insertIndex = targetOrderIndex >= 0 ? targetOrderIndex + 1 : characterPromptOrder.order.length;
+    }
+
+    // 插入选中条目到目标位置
+    const newOrderEntries = selectedEntries.map(entry => ({
+      identifier: entry.identifier,
+      enabled: true,
+    }));
+
+    characterPromptOrder.order.splice(insertIndex, 0, ...newOrderEntries);
+
+    await apiInfo.presetManager.savePreset(presetName, presetData);
+    console.log(
+      `成功移动 ${selectedEntries.length} 个条目到${
+        targetIndex === 'top' ? '顶部' : targetIndex === 'bottom' ? '底部' : '指定位置'
+      }`,
+    );
+
+    // 刷新界面
+    loadAndDisplayEntries(apiInfo);
+  } catch (error) {
+    console.error('移动失败:', error);
+    alert('移动失败: ' + error.message);
+  } finally {
+    // 重置移动模式
+    window.moveMode = null;
+    $('.move-target').removeClass('move-target');
+  }
 }
 
 // 2. 批量编辑功能
