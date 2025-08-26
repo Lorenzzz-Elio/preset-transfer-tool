@@ -1,12 +1,6 @@
 // @ts-nocheck
 // Author: discord千秋梦
-// Version: v1.7
-// 重构说明：
-// - 新增"在此处新建"功能
-// - 添加了导入导出词条功能以及位置选择功能，允许用户指定条目插入位置
-// - 优化了getLoadedPresetName函数的兼容性和稳定性
-// - 统一了数据结构使用，同时支持新旧两种预设格式
-// - 清理了冗余代码，提升了代码质量和可维护性
+// Version: v1.8
 
 function getSillyTavernContext() {
   const st = window.parent?.SillyTavern ?? window.SillyTavern;
@@ -113,6 +107,9 @@ function setCurrentPreset(side) {
     alert(`当前预设"${currentPresetName}"不在可选列表中，可能需要刷新预设列表`);
     return;
   }
+
+  // 记录之前的预设名称（用于正则切换）
+  const previousPresetName = $select.val();
 
   // 设置选中的预设
   $select.val(currentPresetName).trigger('change');
@@ -779,6 +776,908 @@ function ensureAllEntriesHaveNewFields(entries) {
   return entries.map(entry => ensureNewVersionFields(entry));
 }
 
+// ==================== 正则绑定功能 ====================
+
+// 正则绑定配置的数据结构
+const REGEX_BINDING_TYPES = {
+  GLOBAL: 'global', // 全局正则，永不禁用
+  EXCLUSIVE: 'exclusive', // 专属正则，可被多个预设设置，切换时智能管理
+};
+
+// 获取预设的正则绑定配置
+function getPresetRegexBindings(presetName) {
+  try {
+    // 尝试通过多种方式获取预设
+    let preset = null;
+
+    // 方法1: 尝试使用全局API
+    if (typeof window.getPreset === 'function') {
+      preset = window.getPreset(presetName);
+    } else if (typeof getPreset === 'function') {
+      preset = getPreset(presetName);
+    }
+
+    // 方法2: 通过TavernHelper获取
+    if (!preset && window.TavernHelper?.getPreset) {
+      preset = window.TavernHelper.getPreset(presetName);
+    }
+
+    if (!preset || !preset.extensions) {
+      return getDefaultRegexBindings();
+    }
+
+    const bindings = preset.extensions.regexBindings;
+    if (!bindings) {
+      return getDefaultRegexBindings();
+    }
+
+    // 确保所有必需的字段都存在
+    return {
+      exclusive: Array.isArray(bindings.exclusive) ? bindings.exclusive : [],
+    };
+  } catch (error) {
+    console.warn(`获取预设 "${presetName}" 的正则绑定配置失败:`, error);
+    return getDefaultRegexBindings();
+  }
+}
+
+// 保存预设的正则绑定配置
+async function savePresetRegexBindings(presetName, bindings) {
+  try {
+    // 尝试通过多种方式获取预设
+    let preset = null;
+
+    // 方法1: 尝试使用全局API
+    if (typeof window.getPreset === 'function') {
+      preset = window.getPreset(presetName);
+    } else if (typeof getPreset === 'function') {
+      preset = getPreset(presetName);
+    }
+
+    // 方法2: 通过TavernHelper获取
+    if (!preset && window.TavernHelper?.getPreset) {
+      preset = window.TavernHelper.getPreset(presetName);
+    }
+
+    if (!preset) {
+      throw new Error(`预设 "${presetName}" 不存在`);
+    }
+
+    // 确保 extensions 对象存在
+    if (!preset.extensions) {
+      preset.extensions = {};
+    }
+
+    // 保存绑定配置
+    preset.extensions.regexBindings = {
+      exclusive: Array.isArray(bindings.exclusive) ? bindings.exclusive : [],
+    };
+
+    // 保存预设
+    if (typeof window.replacePreset === 'function') {
+      await window.replacePreset(presetName, preset);
+    } else if (typeof replacePreset === 'function') {
+      await replacePreset(presetName, preset);
+    } else if (window.TavernHelper?.replacePreset) {
+      await window.TavernHelper.replacePreset(presetName, preset);
+    } else {
+      throw new Error('无法找到预设保存函数');
+    }
+
+    return true;
+  } catch (error) {
+    console.error(`保存预设 "${presetName}" 的正则绑定配置失败:`, error);
+    return false;
+  }
+}
+
+// 获取默认的正则绑定配置
+function getDefaultRegexBindings() {
+  return {
+    exclusive: [],
+  };
+}
+
+// 获取所有可用的正则列表
+function getAllAvailableRegexes() {
+  try {
+    // 尝试通过多种方式获取正则列表
+    if (typeof window.getTavernRegexes === 'function') {
+      return window.getTavernRegexes({ scope: 'all', enable_state: 'all' });
+    } else if (typeof getTavernRegexes === 'function') {
+      return getTavernRegexes({ scope: 'all', enable_state: 'all' });
+    } else if (window.TavernHelper?.getTavernRegexes) {
+      return window.TavernHelper.getTavernRegexes({ scope: 'all', enable_state: 'all' });
+    } else {
+      console.warn('无法找到getTavernRegexes函数');
+      return [];
+    }
+  } catch (error) {
+    console.error('获取正则列表失败:', error);
+    return [];
+  }
+}
+
+// 分析预设切换时需要启用和禁用的正则
+function analyzeRegexChanges(fromPresetName, toPresetName) {
+  try {
+    const fromBindings = fromPresetName ? getPresetRegexBindings(fromPresetName) : getDefaultRegexBindings();
+    const toBindings = getPresetRegexBindings(toPresetName);
+    const allRegexes = getAllAvailableRegexes();
+
+    // 创建正则ID到正则对象的映射
+    const regexMap = new Map();
+    allRegexes.forEach(regex => {
+      regexMap.set(regex.id, regex);
+    });
+
+    // 计算需要启用的正则（目标预设的专属正则）
+    const shouldEnable = new Set([...toBindings.exclusive]);
+
+    // 计算需要禁用的正则：所有其他预设的专属正则（不包括全局正则和当前预设的专属正则）
+    const shouldDisable = new Set();
+
+    // 获取所有预设的专属正则，找出不属于当前预设的专属正则
+    const apiInfo = getCurrentApiInfo();
+    if (apiInfo && apiInfo.presetNames) {
+      apiInfo.presetNames.forEach(presetName => {
+        if (presetName !== toPresetName) {
+          const otherBindings = getPresetRegexBindings(presetName);
+          otherBindings.exclusive.forEach(regexId => {
+            // 如果这个正则不在当前预设的绑定中，则需要禁用
+            if (!shouldEnable.has(regexId)) {
+              shouldDisable.add(regexId);
+            }
+          });
+        }
+      });
+    }
+
+    // 过滤出实际存在的正则
+    const toEnable = Array.from(shouldEnable).filter(id => regexMap.has(id));
+    const toDisable = Array.from(shouldDisable).filter(id => regexMap.has(id));
+
+    return {
+      toEnable,
+      toDisable,
+      regexMap,
+    };
+  } catch (error) {
+    console.error('分析正则变化失败:', error);
+    return {
+      toEnable: [],
+      toDisable: [],
+      regexMap: new Map(),
+    };
+  }
+}
+
+// 执行正则切换
+async function switchPresetRegexes(fromPresetName, toPresetName) {
+  try {
+    const { toEnable, toDisable, regexMap } = analyzeRegexChanges(fromPresetName, toPresetName);
+
+    if (toEnable.length === 0 && toDisable.length === 0) {
+      return true;
+    }
+
+    // 显示用户反馈
+    showRegexSwitchingFeedback(toEnable, toDisable, regexMap);
+
+    // 执行正则更新
+    const updateFunction = regexes => {
+      let changed = false;
+
+      regexes.forEach(regex => {
+        if (toEnable.includes(regex.id) && !regex.enabled) {
+          regex.enabled = true;
+          changed = true;
+        } else if (toDisable.includes(regex.id) && regex.enabled) {
+          regex.enabled = false;
+          changed = true;
+        }
+      });
+
+      return regexes;
+    };
+
+    // 尝试通过多种方式更新正则
+    if (typeof window.updateTavernRegexesWith === 'function') {
+      await window.updateTavernRegexesWith(updateFunction);
+    } else if (typeof updateTavernRegexesWith === 'function') {
+      await updateTavernRegexesWith(updateFunction);
+    } else if (window.TavernHelper?.updateTavernRegexesWith) {
+      await window.TavernHelper.updateTavernRegexesWith(updateFunction);
+    } else {
+      throw new Error('无法找到updateTavernRegexesWith函数');
+    }
+
+    // 隐藏反馈
+    hideRegexSwitchingFeedback();
+
+    return true;
+  } catch (error) {
+    console.error('切换正则失败:', error);
+    hideRegexSwitchingFeedback();
+
+    // 显示错误提示
+    if (window.toastr) {
+      toastr.error('正则切换失败: ' + error.message);
+    } else {
+      console.error('正则切换失败:', error.message);
+    }
+
+    return false;
+  }
+}
+
+// 显示正则切换反馈
+function showRegexSwitchingFeedback(toEnable, toDisable, regexMap) {
+  const $ = getJQuery();
+
+  // 移除已存在的反馈
+  $('#regex-switching-feedback').remove();
+
+  if (toEnable.length === 0 && toDisable.length === 0) {
+    return;
+  }
+
+  const totalChanges = toEnable.length + toDisable.length;
+  const message = `✅ 已开启绑定正则 (${totalChanges}个)`;
+
+  const feedback = $(`
+    <div id="regex-switching-feedback" style="
+      position: fixed; top: 80px; left: 50%; transform: translateX(-50%); z-index: 10002;
+      background: rgba(0, 0, 0, 0.85); color: white; padding: 10px 20px;
+      border-radius: 6px; font-size: 13px; font-weight: 500;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    ">
+      ${message}
+    </div>
+  `);
+
+  $('body').append(feedback);
+}
+
+// 隐藏正则切换反馈
+function hideRegexSwitchingFeedback() {
+  const $ = getJQuery();
+  setTimeout(() => {
+    $('#regex-switching-feedback').fadeOut(300, function () {
+      $(this).remove();
+    });
+  }, 1000);
+}
+
+// ==================== 全局预设监听器 ====================
+
+let globalPresetListener = {
+  isActive: false,
+  currentPreset: null,
+  pollInterval: null,
+  originalLoadPreset: null,
+  switchInProgress: false,
+
+  // 初始化全局监听器
+  init() {
+    if (this.isActive) return;
+
+    try {
+      // 获取当前预设作为基准
+      this.currentPreset = this.getCurrentPresetName();
+
+      // 方案1: 监听酒馆原生事件
+      this.listenToPresetEvents();
+
+      // 方案2: Hook loadPreset 函数（备选）
+      this.hookLoadPreset();
+
+      // 方案3: 轮询检测（最后备选）
+      this.startPolling();
+
+      this.isActive = true;
+    } catch (error) {
+      console.error('初始化全局预设监听器失败:', error);
+    }
+  },
+
+  // 停止监听器
+  stop() {
+    if (!this.isActive) return;
+
+    // 恢复原始函数
+    if (this.originalLoadPreset) {
+      if (typeof window.loadPreset === 'function') {
+        window.loadPreset = this.originalLoadPreset;
+      }
+      this.originalLoadPreset = null;
+    }
+
+    // 停止轮询
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval);
+      this.pollInterval = null;
+    }
+
+    this.isActive = false;
+  },
+
+  // 获取当前预设名称
+  getCurrentPresetName() {
+    try {
+      if (typeof window.getLoadedPresetName === 'function') {
+        return window.getLoadedPresetName();
+      } else if (typeof getLoadedPresetName === 'function') {
+        return getLoadedPresetName();
+      } else if (window.TavernHelper?.getLoadedPresetName) {
+        return window.TavernHelper.getLoadedPresetName();
+      }
+      return null;
+    } catch (error) {
+      console.warn('获取当前预设名称失败:', error);
+      return null;
+    }
+  },
+
+  // 监听酒馆原生预设事件
+  listenToPresetEvents() {
+    try {
+      const self = this;
+
+      // 方法1: 监听 preset_changed 事件
+      if (typeof eventOn === 'function') {
+        eventOn('preset_changed', data => {
+          // 解析预设名称，可能是字符串或对象
+          let presetName = data;
+          if (typeof data === 'object' && data !== null) {
+            presetName = data.name || data.presetName || data.preset || String(data);
+          }
+          if (presetName && typeof presetName === 'string') {
+            self.handlePresetChange(self.currentPreset, presetName);
+          }
+        });
+      } else if (window.eventOn) {
+        window.eventOn('preset_changed', data => {
+          // 解析预设名称，可能是字符串或对象
+          let presetName = data;
+          if (typeof data === 'object' && data !== null) {
+            presetName = data.name || data.presetName || data.preset || String(data);
+          }
+          if (presetName && typeof presetName === 'string') {
+            self.handlePresetChange(self.currentPreset, presetName);
+          }
+        });
+      }
+
+      // 方法2: 监听可能的其他事件
+      const eventNames = ['PRESET_CHANGED', 'presetChanged', 'preset-changed'];
+      eventNames.forEach(eventName => {
+        try {
+          if (typeof eventOn === 'function') {
+            eventOn(eventName, presetName => {
+              console.log(`事件监听检测到预设切换 (${eventName}): ${self.currentPreset} -> ${presetName}`);
+              self.handlePresetChange(self.currentPreset, presetName);
+            });
+          }
+        } catch (e) {
+          // 忽略不存在的事件
+        }
+      });
+    } catch (error) {
+      console.warn('监听预设事件失败:', error);
+    }
+  },
+
+  // Hook loadPreset 函数
+  hookLoadPreset() {
+    try {
+      // 尝试找到 loadPreset 函数
+      let loadPresetFunc = null;
+
+      if (typeof window.loadPreset === 'function') {
+        loadPresetFunc = window.loadPreset;
+      } else if (typeof loadPreset === 'function') {
+        loadPresetFunc = loadPreset;
+        window.loadPreset = loadPreset; // 确保在window上也有引用
+      } else if (window.TavernHelper?.loadPreset) {
+        loadPresetFunc = window.TavernHelper.loadPreset;
+        window.loadPreset = window.TavernHelper.loadPreset;
+      }
+
+      if (!loadPresetFunc) {
+        console.warn('未找到 loadPreset 函数，跳过Hook');
+        return;
+      }
+
+      // 保存原始函数
+      this.originalLoadPreset = loadPresetFunc;
+
+      // 创建Hook函数
+      const self = this;
+      window.loadPreset = function (presetName) {
+        const previousPreset = self.getCurrentPresetName();
+        console.log(`Hook检测到预设切换: ${previousPreset} -> ${presetName}`);
+
+        // 调用原始函数
+        const result = self.originalLoadPreset.call(this, presetName);
+
+        // 如果切换成功，执行正则切换
+        if (result && presetName !== previousPreset) {
+          self.handlePresetChange(previousPreset, presetName);
+        }
+
+        return result;
+      };
+
+      console.log('loadPreset 函数Hook成功');
+    } catch (error) {
+      console.error('Hook loadPreset 函数失败:', error);
+    }
+  },
+
+  // 开始轮询检测
+  startPolling() {
+    // 停止现有轮询
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval);
+    }
+
+    // 开始新的轮询（每3秒检测一次）
+    this.pollInterval = setInterval(() => {
+      const newPreset = this.getCurrentPresetName();
+      if (newPreset && newPreset !== this.currentPreset) {
+        console.log(`轮询检测到预设切换: ${this.currentPreset} -> ${newPreset}`);
+        this.handlePresetChange(this.currentPreset, newPreset);
+      }
+    }, 3000);
+
+    console.log('预设轮询检测已启动');
+  },
+
+  // 处理预设切换
+  async handlePresetChange(fromPreset, toPreset) {
+    // 防止重复处理
+    if (this.switchInProgress) {
+      console.log('正则切换正在进行中，跳过重复处理');
+      return;
+    }
+
+    try {
+      this.switchInProgress = true;
+      this.currentPreset = toPreset;
+
+      // 执行正则切换
+      await switchPresetRegexes(fromPreset, toPreset);
+
+      // 更新工具界面的状态显示（如果工具已打开）
+      if (toPreset) {
+        updatePresetRegexStatus(toPreset);
+      }
+    } catch (error) {
+      console.error('处理预设切换失败:', error);
+    } finally {
+      this.switchInProgress = false;
+    }
+  },
+};
+
+// 创建正则绑定配置对话框
+function createRegexBindingModal(presetName) {
+  const $ = getJQuery();
+  const { isMobile, isSmallScreen } = getDeviceInfo();
+  const isDark = isDarkTheme();
+
+  // 移除已存在的对话框
+  $('#regex-binding-modal').remove();
+
+  // 获取当前预设的绑定配置
+  const currentBindings = getPresetRegexBindings(presetName);
+  const allRegexes = getAllAvailableRegexes();
+
+  if (allRegexes.length === 0) {
+    alert('当前没有可用的正则表达式');
+    return;
+  }
+
+  const bgColor = isDark ? '#1a1a1a' : '#ffffff';
+  const textColor = isDark ? '#e0e0e0' : '#374151';
+  const borderColor = isDark ? '#374151' : '#e5e7eb';
+  const inputBg = isDark ? '#2d2d2d' : '#ffffff';
+  const sectionBg = isDark ? '#262626' : '#f9fafb';
+
+  const modalHtml = `
+    <div id="regex-binding-modal">
+      <div class="regex-binding-modal-content">
+        <div class="modal-header">
+          <h3>🔗 正则绑定配置</h3>
+          <p>为预设 "${presetName}" 配置正则表达式绑定</p>
+        </div>
+        <div class="binding-explanation">
+          <div class="explanation-item">
+            <span class="type-badge exclusive">专属</span>
+            <span>绑定到特定预设，切换时自动开启/关闭</span>
+          </div>
+          <div class="explanation-item">
+            <span class="type-badge unbound">通用</span>
+            <span>不绑定到预设，保持用户手动设置的状态</span>
+          </div>
+        </div>
+        <div class="regex-list-container">
+          <div class="regex-search">
+            <input type="text" id="regex-search" placeholder="🔍 搜索正则...">
+          </div>
+          <div class="regex-list" id="regex-list">
+            ${generateGroupedRegexList(allRegexes, currentBindings)}
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="save-regex-bindings">💾 保存</button>
+          <button id="cancel-regex-bindings">❌ 取消</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('body').append(modalHtml);
+
+  // 添加样式
+  const styles = `
+    #regex-binding-modal {
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+      background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px);
+      z-index: 10001; display: flex; align-items: center; justify-content: center;
+      padding: 20px; animation: pt-fadeIn 0.3s ease-out;
+    }
+    #regex-binding-modal .regex-binding-modal-content {
+      background: ${bgColor}; border-radius: 16px; padding: 24px;
+      max-width: ${isMobile ? '95vw' : '700px'}; width: 100%;
+      max-height: 80vh; overflow-y: auto; color: ${textColor};
+      box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+    }
+    #regex-binding-modal .modal-header {
+      text-align: center; margin-bottom: 20px;
+      padding-bottom: 16px; border-bottom: 1px solid ${borderColor};
+    }
+    #regex-binding-modal .modal-header h3 {
+      margin: 0 0 8px 0; font-size: 20px; font-weight: 700;
+    }
+    #regex-binding-modal .modal-header p {
+      margin: 0; font-size: 14px; color: ${isDark ? '#9ca3af' : '#6b7280'};
+    }
+    #regex-binding-modal .binding-explanation {
+      background: ${sectionBg}; border-radius: 8px; padding: 16px; margin-bottom: 20px;
+    }
+    #regex-binding-modal .explanation-item {
+      display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+    }
+    #regex-binding-modal .explanation-item:last-child {
+      margin-bottom: 0;
+    }
+    #regex-binding-modal .type-badge {
+      padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;
+      min-width: 60px; text-align: center;
+    }
+    #regex-binding-modal .type-badge.exclusive {
+      background: #f59e0b; color: white;
+    }
+    #regex-binding-modal .type-badge.unbound {
+      background: #6b7280; color: white;
+    }
+    #regex-binding-modal .regex-search {
+      margin-bottom: 16px;
+    }
+    #regex-binding-modal #regex-search {
+      width: 100%; padding: 12px 16px; background: ${inputBg};
+      color: ${textColor}; border: 1px solid ${borderColor};
+      border-radius: 8px; font-size: 14px; box-sizing: border-box;
+    }
+    #regex-binding-modal .regex-list {
+      max-height: 400px; overflow-y: auto; border: 1px solid ${borderColor};
+      border-radius: 8px; background: ${inputBg};
+    }
+    #regex-binding-modal .regex-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px; border-bottom: 1px solid ${borderColor};
+    }
+    #regex-binding-modal .regex-item:last-child {
+      border-bottom: none;
+    }
+    #regex-binding-modal .regex-info {
+      flex: 1;
+    }
+    #regex-binding-modal .regex-name {
+      font-weight: 600; margin-bottom: 4px;
+    }
+    #regex-binding-modal .regex-status {
+      font-size: 12px;
+    }
+    #regex-binding-modal .regex-status.enabled {
+      color: #10b981;
+    }
+    #regex-binding-modal .regex-status.disabled {
+      color: #ef4444;
+    }
+    #regex-binding-modal .binding-controls {
+      margin-left: 16px;
+    }
+    #regex-binding-modal .binding-type-select {
+      padding: 6px 12px; background: ${inputBg}; color: ${textColor};
+      border: 1px solid ${borderColor}; border-radius: 6px; font-size: 14px;
+    }
+    #regex-binding-modal .modal-actions {
+      display: flex; gap: 12px; justify-content: center; margin-top: 20px;
+      padding-top: 16px; border-top: 1px solid ${borderColor};
+    }
+    #regex-binding-modal .modal-actions button {
+      padding: 12px 24px; border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    #regex-binding-modal #save-regex-bindings {
+      background: #10b981; color: white;
+    }
+    #regex-binding-modal #save-regex-bindings:hover {
+      background: #059669;
+    }
+    #regex-binding-modal #cancel-regex-bindings {
+      background: ${isDark ? '#6b7280' : '#9ca3af'}; color: white;
+    }
+    #regex-binding-modal #cancel-regex-bindings:hover {
+      background: ${isDark ? '#4b5563' : '#6b7280'};
+    }
+
+    /* 分组样式 */
+    #regex-binding-modal .regex-group { margin-bottom: 8px; border: 1px solid ${borderColor}; border-radius: 6px; background: ${sectionBg}; }
+    #regex-binding-modal .group-header { display: flex; align-items: center; padding: 8px 12px; cursor: pointer; background: ${
+      isDark ? '#374151' : '#f3f4f6'
+    }; border-radius: 6px 6px 0 0; user-select: none; }
+    #regex-binding-modal .group-header:hover { background: ${isDark ? '#4b5563' : '#e5e7eb'}; }
+    #regex-binding-modal .group-toggle { margin-right: 8px; font-size: 12px; transition: transform 0.2s; }
+    #regex-binding-modal .group-name { font-weight: 600; flex: 1; }
+    #regex-binding-modal .group-count { font-size: 12px; color: ${isDark ? '#9ca3af' : '#6b7280'}; margin-right: 12px; }
+    #regex-binding-modal .group-batch-select { padding: 4px 6px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${borderColor}; border-radius: 4px; font-size: 12px; width: 80px; margin-left: auto; }
+    #regex-binding-modal .group-content { overflow: hidden; transition: all 0.3s ease; }
+    #regex-binding-modal .group-content.collapsed { max-height: 0 !important; }
+    #regex-binding-modal .group-content.expanded { max-height: 500px !important; overflow-y: auto; }
+    #regex-binding-modal .regex-group .regex-item { border-bottom: 1px solid ${borderColor}; margin: 0; }
+    #regex-binding-modal .regex-group .regex-item:last-child { border-bottom: none; }
+  `;
+
+  $('head').append(`<style id="regex-binding-modal-styles">${styles}</style>`);
+
+  // 绑定事件
+  bindRegexBindingEvents(presetName);
+}
+
+// 获取正则在当前绑定配置中的类型
+function getCurrentRegexBindingType(regexId, bindings) {
+  if (bindings.exclusive.includes(regexId)) return 'exclusive';
+  return '';
+}
+
+// 生成分组的正则列表HTML
+function generateGroupedRegexList(allRegexes, currentBindings) {
+  const groups = new Map();
+  const ungrouped = [];
+
+  // 分组正则
+  allRegexes.forEach(regex => {
+    const match = regex.script_name.match(/^(【[^】]+】|[^-\[\]_.]+[-\[\]_.])/);
+    let groupName = match ? match[1].replace(/[-\[\]_.]$/, '').replace(/^【|】$/g, '') : null;
+
+    // 清理分组名称，移除可能导致选择器问题的字符
+    if (groupName) {
+      groupName = groupName.replace(/['"\\]/g, '').trim();
+      if (groupName.length > 0) {
+        if (!groups.has(groupName)) groups.set(groupName, []);
+        groups.get(groupName).push(regex);
+      } else {
+        ungrouped.push(regex);
+      }
+    } else {
+      ungrouped.push(regex);
+    }
+  });
+
+  let html = '';
+
+  // 生成分组和单项HTML
+  for (const [groupName, regexes] of groups) {
+    if (regexes.length > 1) {
+      const safeGroupName = groupName.replace(/"/g, '&quot;');
+      html += `<div class="regex-group">
+        <div class="group-header" data-group="${safeGroupName}">
+          <span class="group-toggle">▶</span>
+          <span class="group-name">${groupName}</span>
+          <span class="group-count">(${regexes.length}个)</span>
+          <select class="group-batch-select" data-group="${safeGroupName}">
+            <option value="">批量设置</option>
+            <option value="">通用</option>
+            <option value="exclusive">专属</option>
+          </select>
+        </div>
+        <div class="group-content collapsed" data-group="${safeGroupName}">
+          ${regexes.map(r => generateRegexItemHTML(r, currentBindings)).join('')}
+        </div>
+      </div>`;
+    } else {
+      ungrouped.push(...regexes);
+    }
+  }
+
+  return html + ungrouped.map(r => generateRegexItemHTML(r, currentBindings)).join('');
+}
+
+// 生成单个正则项HTML
+function generateRegexItemHTML(regex, currentBindings) {
+  const type = getCurrentRegexBindingType(regex.id, currentBindings);
+  return `<div class="regex-item" data-regex-id="${regex.id}">
+    <div class="regex-info">
+      <div class="regex-name">${regex.script_name}</div>
+      <div class="regex-status ${regex.enabled ? 'enabled' : 'disabled'}">
+        ${regex.enabled ? '✅' : '❌'}
+      </div>
+    </div>
+    <div class="binding-controls">
+      <select class="binding-type-select" data-regex-id="${regex.id}">
+        <option value="">通用</option>
+        <option value="exclusive" ${type === 'exclusive' ? 'selected' : ''}>专属</option>
+      </select>
+    </div>
+  </div>`;
+}
+
+// 绑定正则绑定对话框的事件
+function bindRegexBindingEvents(presetName) {
+  const $ = getJQuery();
+
+  // 分组折叠展开
+  $('#regex-binding-modal').on('click', '.group-header', function (e) {
+    if ($(e.target).is('select')) return;
+    const group = $(this).data('group');
+    const $content = $(`#regex-binding-modal .group-content[data-group="${group}"]`);
+    const $toggle = $(this).find('.group-toggle');
+
+    if ($content.hasClass('collapsed')) {
+      $content.removeClass('collapsed').addClass('expanded');
+      $toggle.text('▼');
+    } else {
+      $content.removeClass('expanded').addClass('collapsed');
+      $toggle.text('▶');
+    }
+  });
+
+  // 分组批量设置
+  $('#regex-binding-modal').on('change', '.group-batch-select', function () {
+    const group = $(this).data('group');
+    const type = $(this).val();
+    $(`#regex-binding-modal .group-content[data-group="${group}"] .binding-type-select`).val(type);
+    $(this).val('');
+  });
+
+  // 搜索功能
+  $('#regex-search').on('input', function () {
+    const term = $(this).val().toLowerCase();
+    $('#regex-list .regex-item').each(function () {
+      $(this).toggle($(this).find('.regex-name').text().toLowerCase().includes(term));
+    });
+    $('#regex-list .regex-group').each(function () {
+      const groupMatch = $(this).find('.group-name').text().toLowerCase().includes(term);
+      const hasVisible = $(this).find('.regex-item:visible').length > 0;
+      $(this).toggle(groupMatch || hasVisible);
+    });
+  });
+
+  // 保存配置
+  $('#save-regex-bindings').on('click', async function () {
+    const $button = $(this);
+    const originalText = $button.text();
+    $button.prop('disabled', true).text('保存中...');
+
+    try {
+      // 收集所有绑定配置
+      const newBindings = {
+        exclusive: [],
+      };
+
+      $('.binding-type-select').each(function () {
+        const $select = $(this);
+        const regexId = $select.data('regex-id');
+        const bindingType = $select.val();
+
+        if (bindingType === 'exclusive') {
+          newBindings.exclusive.push(regexId);
+        }
+      });
+
+      // 保存配置
+      const success = await savePresetRegexBindings(presetName, newBindings);
+
+      if (success) {
+        // 显示成功提示
+        if (window.toastr) {
+          toastr.success('正则绑定配置已保存');
+        } else {
+          alert('正则绑定配置已保存');
+        }
+
+        // 关闭对话框
+        $('#regex-binding-modal').remove();
+        $('#regex-binding-modal-styles').remove();
+
+        // 更新预设状态显示
+        updatePresetRegexStatus(presetName);
+      } else {
+        throw new Error('保存失败');
+      }
+    } catch (error) {
+      console.error('保存正则绑定配置失败:', error);
+      if (window.toastr) {
+        toastr.error('保存失败: ' + error.message);
+      } else {
+        alert('保存失败: ' + error.message);
+      }
+    } finally {
+      $button.prop('disabled', false).text(originalText);
+    }
+  });
+
+  // 取消按钮
+  $('#cancel-regex-bindings').on('click', function () {
+    $('#regex-binding-modal').remove();
+    $('#regex-binding-modal-styles').remove();
+  });
+
+  // 点击背景关闭
+  $('#regex-binding-modal').on('click', function (e) {
+    if (e.target === this) {
+      $(this).remove();
+      $('#regex-binding-modal-styles').remove();
+    }
+  });
+
+  // ESC键关闭
+  $(getParentWindow().document).on('keydown.regex-binding', function (e) {
+    if (e.key === 'Escape') {
+      $('#regex-binding-modal').remove();
+      $('#regex-binding-modal-styles').remove();
+      $(getParentWindow().document).off('keydown.regex-binding');
+    }
+  });
+}
+
+// 更新预设的正则状态显示
+function updatePresetRegexStatus(presetName) {
+  const $ = getJQuery();
+  const bindings = getPresetRegexBindings(presetName);
+  const totalBindings = bindings.exclusive.length;
+
+  // 更新按钮标题显示绑定数量
+  const leftPreset = $('#left-preset').val();
+  const rightPreset = $('#right-preset').val();
+
+  if (leftPreset === presetName) {
+    const $button = $('#regex-binding-left');
+    $button.attr('title', `配置正则绑定 (已绑定 ${totalBindings} 个)`);
+    if (totalBindings > 0) {
+      $button.addClass('has-bindings');
+    } else {
+      $button.removeClass('has-bindings');
+    }
+  }
+
+  if (rightPreset === presetName) {
+    const $button = $('#regex-binding-right');
+    $button.attr('title', `配置正则绑定 (已绑定 ${totalBindings} 个)`);
+    if (totalBindings > 0) {
+      $button.addClass('has-bindings');
+    } else {
+      $button.removeClass('has-bindings');
+    }
+  }
+}
+
 // 主题相关功能
 function isDarkTheme() {
   try {
@@ -992,6 +1891,8 @@ function createTransferUI() {
   // 初始化主题设置
   initializeThemeSettings();
 
+  // 注意：全局预设监听器已在脚本加载时启动，这里不需要重复初始化
+
   const apiInfo = getCurrentApiInfo();
   if (!apiInfo) {
     console.error('无法获取API信息');
@@ -1018,11 +1919,11 @@ function createTransferUI() {
                     </div>
                     <div class="font-size-control">
                         <label for="font-size-slider" title="调节字体大小">🔤</label>
-                        <input type="range" id="font-size-slider" min="12" max="24" value="16" step="1">
+                        <input type="range" id="font-size-slider" min="10" max="32" value="16" step="1">
                         <span id="font-size-display">16px</span>
                     </div>
                     <div class="version-info">
-                        <span class="author">V1.7 by discord千秋梦</span>
+                        <span class="author">V1.8 by discord千秋梦</span>
                     </div>
                 </div>
                 <div class="preset-selection">
@@ -1037,6 +1938,7 @@ function createTransferUI() {
                                 ${apiInfo.presetNames.map(name => `<option value="${name}">${name}</option>`).join('')}
                             </select>
                             <button id="get-current-left" class="get-current-btn" title="获取当前预设">📥</button>
+                            <button id="regex-binding-left" class="regex-binding-btn" title="配置正则绑定">🔗</button>
                         </div>
                     </div>
                     <div class="preset-field">
@@ -1050,6 +1952,7 @@ function createTransferUI() {
                                 ${apiInfo.presetNames.map(name => `<option value="${name}">${name}</option>`).join('')}
                             </select>
                             <button id="get-current-right" class="get-current-btn" title="获取当前预设">📥</button>
+                            <button id="regex-binding-right" class="regex-binding-btn" title="配置正则绑定">🔗</button>
                         </div>
                     </div>
                 </div>
@@ -1543,10 +2446,11 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             font-size: ${isMobile ? '14px' : '16px'}; cursor: pointer; margin: 0;
         }
         #preset-transfer-modal #font-size-slider {
-            width: ${isMobile ? '60px' : '80px'}; height: 4px;
+            width: ${isMobile ? '60px' : '80px'}; height: ${isMobile ? '24px' : '32px'};
             background: rgba(${isDark ? '255,255,255' : '0,0,0'}, 0.2);
             border-radius: 2px; outline: none; cursor: pointer;
             -webkit-appearance: none; appearance: none;
+            /* 移除padding，直接让滑块本身占满整个高度 */
         }
         #preset-transfer-modal #font-size-slider::-webkit-slider-thumb {
             -webkit-appearance: none; appearance: none;
@@ -1601,10 +2505,18 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             flex: 1;
         }
         #preset-transfer-modal .get-current-btn {
-            padding: ${isMobile ? '14px 16px' : '12px 14px'}; background: ${isDark ? '#4b5563' : '#6b7280'};
+            padding: ${isMobile ? '10px 12px' : '12px 14px'}; background: ${isDark ? '#4b5563' : '#6b7280'};
             border: none; color: #ffffff; border-radius: 8px; cursor: pointer;
-            font-size: ${isMobile ? '16px' : '14px'}; font-weight: 600;
-            transition: all 0.3s ease; min-width: ${isMobile ? '50px' : '45px'};
+            font-size: ${isMobile ? '14px' : '14px'}; font-weight: 600;
+            transition: all 0.3s ease; min-width: ${isMobile ? '40px' : '45px'};
+            display: flex; align-items: center; justify-content: center;
+            transform: translateZ(0); will-change: background-color, transform;
+        }
+        #preset-transfer-modal .regex-binding-btn {
+            padding: ${isMobile ? '10px 12px' : '12px 14px'}; background: ${isDark ? '#7c3aed' : '#8b5cf6'};
+            border: none; color: #ffffff; border-radius: 8px; cursor: pointer;
+            font-size: ${isMobile ? '14px' : '14px'}; font-weight: 600;
+            transition: all 0.3s ease; min-width: ${isMobile ? '40px' : '45px'};
             display: flex; align-items: center; justify-content: center;
             transform: translateZ(0); will-change: background-color, transform;
         }
@@ -1613,6 +2525,16 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         }
         #preset-transfer-modal .get-current-btn:active {
             transform: scale(0.98);
+        }
+        #preset-transfer-modal .regex-binding-btn:hover {
+            background: ${isDark ? '#8b5cf6' : '#7c3aed'}; transform: scale(1.05);
+        }
+        #preset-transfer-modal .regex-binding-btn:active {
+            transform: scale(0.98);
+        }
+        #preset-transfer-modal .regex-binding-btn.has-bindings {
+            background: ${isDark ? '#059669' : '#10b981'};
+            box-shadow: 0 0 0 2px ${isDark ? '#10b981' : '#059669'}40;
         }
         #preset-transfer-modal .preset-field label {
             display: flex; flex-direction: column; justify-content: flex-start;
@@ -2107,11 +3029,50 @@ function bindTransferEvents(apiInfo, modal) {
     setCurrentPreset('right');
   });
 
+  // 正则绑定按钮事件
+  $('#regex-binding-left').on('click', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const presetName = $('#left-preset').val();
+    if (presetName) {
+      createRegexBindingModal(presetName);
+    } else {
+      alert('请先选择左侧预设');
+    }
+  });
+
+  $('#regex-binding-right').on('click', function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    const presetName = $('#right-preset').val();
+    if (presetName) {
+      createRegexBindingModal(presetName);
+    } else {
+      alert('请先选择右侧预设');
+    }
+  });
+
   // 预设选择变化时重置界面
   leftSelect.add(rightSelect).on('change', function () {
+    const $this = $(this);
+    const isLeftSelect = $this.is('#left-preset');
+    const newPresetName = $this.val();
+
+    // 获取之前的预设名称（用于正则切换）
+    const previousPresetName = $this.data('previous-value');
+
+    // 更新按钮状态
     loadBtn.prop('disabled', !leftSelect.val() && !rightSelect.val());
     resetInterface();
     saveCurrentSettings();
+
+    // 更新正则绑定状态显示（全局监听器会处理正则切换）
+    if (newPresetName) {
+      updatePresetRegexStatus(newPresetName);
+    }
+
+    // 保存当前值作为下次的"之前值"
+    $this.data('previous-value', newPresetName);
   });
 
   loadBtn.on('click', () => loadAndDisplayEntries(apiInfo));
@@ -2196,12 +3157,19 @@ function bindTransferEvents(apiInfo, modal) {
   $('#single-copy').on('click', () => simpleCopyEntries('single', apiInfo));
   $('#single-move').on('click', () => startMoveMode('single', apiInfo));
 
-  $('#close-modal').on('click', () => modal.remove());
+  $('#close-modal').on('click', () => {
+    // 注意：不停止全局预设监听器，因为它应该持续运行
+    modal.remove();
+  });
   modal.on('click', e => {
-    if (e.target === modal[0]) modal.remove();
+    if (e.target === modal[0]) {
+      // 注意：不停止全局预设监听器，因为它应该持续运行
+      modal.remove();
+    }
   });
   $(document).on('keydown.preset-transfer', e => {
     if (e.key === 'Escape') {
+      // 注意：不停止全局预设监听器，因为它应该持续运行
       modal.remove();
       $(document).off('keydown.preset-transfer');
     }
@@ -5417,7 +6385,13 @@ const BatchEditor = {
 
 // 4. 快速预览和测试功能
 const QuickPreview = {
-  // 生成预设预览
+  // HTML转义函数，防止XSS
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  },
+  // 生成预设预览（显示原始HTML标签）
   generatePreview(entries, maxEntries = 5) {
     // entries 参数已经是过滤后的启用条目，不需要再次过滤
     const previewEntries = entries.slice(0, maxEntries);
@@ -5426,10 +6400,77 @@ const QuickPreview = {
       .map(entry => {
         const roleIcon = { system: '🤖', user: '👤', assistant: '🎭' }[entry.role] || '📝';
         const content = entry.content || '';
-        const preview = content.length > 100 ? content.substring(0, 100) + '...' : content;
-        return `${roleIcon} ${entry.name || '未命名'}\n${preview}`;
+        // 保持原始HTML标签，但进行安全转义
+        const preview = content.length > 200 ? content.substring(0, 200) + '...' : content;
+        const safeName = this.escapeHtml(entry.name || '未命名');
+        const safePreview = this.escapeHtml(preview);
+        return `${roleIcon} ${safeName}\n${safePreview}`;
       })
       .join('\n\n' + '─'.repeat(50) + '\n\n');
+  },
+
+  // 创建虚拟滚动的条目列表
+  createVirtualScrollPreview(entries) {
+    return {
+      entries: entries,
+      itemHeight: 120, // 每个条目的估计高度
+      containerHeight: 400, // 容器高度
+      visibleCount: Math.ceil(400 / 120), // 可见条目数量
+      renderBuffer: 5, // 渲染缓冲区
+    };
+  },
+
+  // 渲染可见范围内的条目
+  renderVisibleEntries(virtualData, scrollTop, isDark = false) {
+    const { entries, itemHeight, visibleCount, renderBuffer } = virtualData;
+    const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - renderBuffer);
+    const endIndex = Math.min(entries.length, startIndex + visibleCount + renderBuffer * 2);
+
+    const visibleEntries = entries.slice(startIndex, endIndex);
+    const offsetTop = startIndex * itemHeight;
+
+    const itemBg = isDark ? '#1f2937' : '#ffffff';
+    const borderColor = isDark ? '#374151' : '#e5e7eb';
+    const titleColor = isDark ? '#f3f4f6' : '#374151';
+    const metaColor = isDark ? '#9ca3af' : '#6b7280';
+
+    return {
+      html: visibleEntries
+        .map((entry, index) => {
+          const actualIndex = startIndex + index;
+          const roleIcon = { system: '🤖', user: '👤', assistant: '🎭' }[entry.role] || '📝';
+          const content = entry.content || '';
+          const preview = content.length > 300 ? content.substring(0, 300) + '...' : content;
+
+          // HTML转义防止XSS
+          const safeName = this.escapeHtml(entry.name || '未命名');
+          const safePreview = this.escapeHtml(preview);
+
+          return `
+          <div class="virtual-entry-item" style="
+            position: absolute;
+            top: ${actualIndex * itemHeight}px;
+            left: 0;
+            right: 0;
+            height: ${itemHeight - 10}px;
+            padding: 8px;
+            border-bottom: 1px solid ${borderColor};
+            background: ${itemBg};
+          ">
+            <div style="font-weight: 600; margin-bottom: 4px; color: ${titleColor};">
+              ${roleIcon} ${safeName}
+              <span style="font-size: 12px; color: ${metaColor};">(${entry.injection_position || 'relative'}:${
+            entry.injection_depth ?? 4
+          })</span>
+            </div>
+            <div style="font-size: 12px; color: ${metaColor}; font-family: 'Courier New', monospace; white-space: pre-wrap; overflow: hidden; max-height: 80px;">${safePreview}</div>
+          </div>
+        `;
+        })
+        .join(''),
+      totalHeight: entries.length * itemHeight,
+      offsetTop,
+    };
   },
 
   // Token估算
@@ -5521,11 +6562,16 @@ const QuickPreview = {
             }
 
             <div style="margin-bottom: 20px;">
-              <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600;">📝 预设内容预览</h4>
-              <div style="background: ${sectionBg}; border: 1px solid ${borderColor}; border-radius: 8px; padding: 16px; max-height: 400px; overflow-y: auto;">
-                <pre style="margin: 0; white-space: pre-wrap; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5;">${
-                  preview.preview
-                }</pre>
+              <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600;">📝 所有条目预览 (虚拟滚动)</h4>
+              <div id="virtual-scroll-container" style="
+                background: ${sectionBg};
+                border: 1px solid ${borderColor};
+                border-radius: 8px;
+                height: 400px;
+                overflow-y: auto;
+                position: relative;
+              ">
+                <div id="virtual-scroll-content" style="position: relative;"></div>
               </div>
             </div>
 
@@ -5537,6 +6583,39 @@ const QuickPreview = {
       `;
 
       $('body').append(modalHtml);
+
+      // 初始化虚拟滚动
+      const entries = getOrderedPromptEntries(presetData, 'default');
+      const virtualData = this.createVirtualScrollPreview(entries);
+      const $container = $('#virtual-scroll-container');
+      const $content = $('#virtual-scroll-content');
+
+      // 设置内容总高度
+      $content.css('height', virtualData.totalHeight + 'px');
+
+      // 初始渲染
+      const initialRender = this.renderVisibleEntries(virtualData, 0, isDark);
+      $content.html(initialRender.html);
+
+      // 滚动事件处理（添加节流）
+      let scrollTimeout = null;
+      let lastStartIndex = -1;
+
+      $container.on('scroll', () => {
+        if (scrollTimeout) clearTimeout(scrollTimeout);
+
+        scrollTimeout = setTimeout(() => {
+          const scrollTop = $container.scrollTop();
+          const newStartIndex = Math.max(0, Math.floor(scrollTop / virtualData.itemHeight) - virtualData.renderBuffer);
+
+          // 只有当起始索引变化时才重新渲染
+          if (newStartIndex !== lastStartIndex) {
+            const renderResult = this.renderVisibleEntries(virtualData, scrollTop, isDark);
+            $content.html(renderResult.html);
+            lastStartIndex = newStartIndex;
+          }
+        }, 16); // 约60fps的节流
+      });
 
       $('#close-preview').on('click', () => {
         $('#preview-modal').remove();
@@ -6035,6 +7114,23 @@ try {
     }
   }
   waitForExtensionsMenu();
+
+  // 启动全局预设监听器（在脚本加载时就启动，不需要等用户打开界面）
+  try {
+    globalPresetListener.init();
+    console.log('全局预设监听器已启动');
+  } catch (error) {
+    console.warn('启动全局预设监听器失败:', error);
+    // 延迟重试
+    setTimeout(() => {
+      try {
+        globalPresetListener.init();
+        console.log('全局预设监听器延迟启动成功');
+      } catch (retryError) {
+        console.error('全局预设监听器启动失败:', retryError);
+      }
+    }, 2000);
+  }
 } catch (error) {
   console.error('初始化失败:', error);
   setTimeout(initPresetTransferIntegration, 3000);
