@@ -1,6 +1,164 @@
 // @ts-nocheck
 // Author: discord千秋梦
-// Version: v1.8
+// Version: v1.9
+
+// 性能优化工具函数
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
+// 公共样式管理器 - 减少重复代码的利器喵~
+const CommonStyles = {
+  getVars() {
+    // 延迟获取函数，避免函数未定义的问题
+    const isDark = typeof isDarkTheme === 'function' ? isDarkTheme() : false;
+    const deviceInfo =
+      typeof getDeviceInfo === 'function' ? getDeviceInfo() : { isMobile: false, isSmallScreen: false };
+    const { isMobile, isSmallScreen } = deviceInfo;
+    const fontSize = localStorage.getItem('preset-transfer-font-size') || '16';
+
+    return {
+      // 颜色主题变量
+      bgColor: isDark ? '#1a1a1a' : '#ffffff',
+      textColor: isDark ? '#e0e0e0' : '#374151',
+      borderColor: isDark ? '#374151' : '#e5e7eb',
+      inputBg: isDark ? '#2d2d2d' : '#ffffff',
+      inputBorder: isDark ? '#4b5563' : '#d1d5db',
+      sectionBg: isDark ? '#262626' : '#f9fafb',
+      subBg: isDark ? '#111827' : '#f9fafb',
+      tipColor: isDark ? '#9ca3af' : '#6b7280',
+
+      // 字体尺寸变量
+      fontSize: `${fontSize}px`,
+      fontSizeSmall: `calc(${fontSize}px * 0.75)`,
+      fontSizeMedium: `calc(${fontSize}px * 0.875)`,
+      fontSizeLarge: `calc(${fontSize}px * 1.125)`,
+
+      // 间距变量
+      padding: isMobile ? '16px' : '24px',
+      paddingSmall: isMobile ? '12px' : '16px',
+      paddingLarge: isMobile ? '20px' : '28px',
+      margin: isMobile ? '16px' : '20px',
+      gap: isMobile ? '8px' : '12px',
+
+      // 尺寸变量
+      borderRadius: '16px',
+      borderRadiusSmall: '8px',
+      borderRadiusMedium: '12px',
+      maxWidth: isMobile ? '95vw' : '600px',
+      maxWidthLarge: isMobile ? '95vw' : '800px',
+      maxHeight: '80vh',
+
+      // 按钮样式变量
+      buttonPadding: isMobile ? '14px 24px' : '12px 22px',
+      buttonPaddingSmall: isMobile ? '8px 16px' : '6px 12px',
+      buttonRadius: '8px',
+
+      // 响应式标记
+      isMobile,
+      isSmallScreen,
+    };
+  },
+
+  // 获取通用模态框基础样式
+  getModalBaseStyles(customVars = {}) {
+    const vars = { ...this.getVars(), ...customVars };
+    return `
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+      background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px);
+      z-index: 10001; display: flex; align-items: center; justify-content: center;
+      padding: ${vars.padding}; animation: pt-fadeIn 0.3s ease-out;
+    `;
+  },
+
+  // 获取通用模态框内容样式
+  getModalContentStyles(customVars = {}) {
+    const vars = { ...this.getVars(), ...customVars };
+    return `
+      background: ${vars.bgColor}; border-radius: ${vars.borderRadius};
+      padding: ${vars.padding}; max-width: ${vars.maxWidth}; width: 100%;
+      max-height: ${vars.maxHeight}; overflow-y: auto; color: ${vars.textColor};
+      box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+    `;
+  },
+};
+
+// 单文件内模块化：轻量 API 兼容层（仅封装对外部全局函数的多路查找）
+const PT = (() => {
+  const safeCall = (f, ...args) => {
+    try {
+      if (typeof f === 'function') return f(...args);
+    } catch (e) {
+      console.warn('调用外部函数失败:', e);
+    }
+    return undefined;
+  };
+
+  const api = {
+    // 预设相关
+    getPreset(name) {
+      return (
+        safeCall(window?.getPreset, name) ??
+        (typeof getPreset === 'function' ? safeCall(getPreset, name) : undefined) ??
+        safeCall(window?.TavernHelper?.getPreset, name)
+      );
+    },
+    async replacePreset(name, preset) {
+      if (typeof window?.replacePreset === 'function') return await window.replacePreset(name, preset);
+      if (typeof replacePreset === 'function') return await replacePreset(name, preset);
+      if (window?.TavernHelper?.replacePreset) return await window.TavernHelper.replacePreset(name, preset);
+      throw new Error('无法找到预设保存函数');
+    },
+
+    // 正则相关
+    getTavernRegexes(opts) {
+      return (
+        safeCall(window?.getTavernRegexes, opts) ??
+        (typeof getTavernRegexes === 'function' ? safeCall(getTavernRegexes, opts) : undefined) ??
+        safeCall(window?.TavernHelper?.getTavernRegexes, opts) ??
+        []
+      );
+    },
+    async updateTavernRegexesWith(updater) {
+      if (typeof window?.updateTavernRegexesWith === 'function') return await window.updateTavernRegexesWith(updater);
+      if (typeof updateTavernRegexesWith === 'function') return await updateTavernRegexesWith(updater);
+      if (window?.TavernHelper?.updateTavernRegexesWith)
+        return await window.TavernHelper.updateTavernRegexesWith(updater);
+      throw new Error('无法找到updateTavernRegexesWith函数');
+    },
+
+    // 预设加载/事件
+    getLoadedPresetName() {
+      return (
+        safeCall(window?.getLoadedPresetName) ??
+        (typeof getLoadedPresetName === 'function' ? safeCall(getLoadedPresetName) : undefined) ??
+        safeCall(window?.TavernHelper?.getLoadedPresetName)
+      );
+    },
+    loadPreset(name) {
+      return (
+        safeCall(window?.loadPreset, name) ??
+        (typeof loadPreset === 'function' ? safeCall(loadPreset, name) : undefined) ??
+        safeCall(window?.TavernHelper?.loadPreset, name)
+      );
+    },
+    eventOn(name, cb) {
+      return (
+        (typeof eventOn === 'function' ? safeCall(eventOn, name, cb) : undefined) ?? safeCall(window?.eventOn, name, cb)
+      );
+    },
+  };
+
+  return { API: api };
+})();
 
 function getSillyTavernContext() {
   const st = window.parent?.SillyTavern ?? window.SillyTavern;
@@ -39,47 +197,17 @@ function setCurrentPreset(side) {
   let currentPresetName = null;
 
   try {
-    // 方法1: 尝试使用全局 API（@types/function/preset.d.ts 提供）
-    if (typeof window.getLoadedPresetName === 'function') {
-      currentPresetName = window.getLoadedPresetName();
-    } else if (typeof getLoadedPresetName === 'function') {
-      currentPresetName = getLoadedPresetName();
-    }
+    currentPresetName = PT.API.getLoadedPresetName?.() ?? null;
   } catch (e) {
-    console.warn('全局getLoadedPresetName调用失败:', e);
+    console.warn('统一API获取当前预设失败:', e);
     currentPresetName = null;
   }
 
-  // 方法2: 尝试从SillyTavern上下文获取
-  if (!currentPresetName) {
-    try {
-      const context = getSillyTavernContext();
-      if (typeof context?.getLoadedPresetName === 'function') {
-        currentPresetName = context.getLoadedPresetName();
-      }
-    } catch (e) {
-      console.warn('从context获取预设名称失败:', e);
-    }
-  }
-
-  // 方法3: 尝试从父窗口获取
-  if (!currentPresetName) {
-    try {
-      const parentWindow = getParentWindow();
-      if (typeof parentWindow.getLoadedPresetName === 'function') {
-        currentPresetName = parentWindow.getLoadedPresetName();
-      }
-    } catch (e) {
-      console.warn('从父窗口获取预设名称失败:', e);
-    }
-  }
-
-  // 方法4: 尝试从预设管理器获取当前预设
+  // 兜底：从预设管理器获取当前预设
   if (!currentPresetName) {
     try {
       const apiInfo = getCurrentApiInfo();
       if (apiInfo && apiInfo.presetManager) {
-        // 尝试获取当前使用的预设名称
         const currentPreset = apiInfo.presetManager.getCompletionPresetByName('in_use');
         if (currentPreset && currentPreset.name && currentPreset.name !== 'in_use') {
           currentPresetName = currentPreset.name;
@@ -147,18 +275,12 @@ async function batchDeletePresets(presetNames) {
 
 function createBatchDeleteModal(apiInfo) {
   const $ = getJQuery();
-  const { isMobile, isSmallScreen } = getDeviceInfo();
-  const isDark = isDarkTheme();
 
   // 移除已存在的模态框
   $('#batch-delete-modal').remove();
 
-  const bgColor = isDark ? '#1a1a1a' : '#ffffff';
-  const textColor = isDark ? '#e0e0e0' : '#374151';
-  const borderColor = isDark ? '#374151' : '#e5e7eb';
-  const inputBg = isDark ? '#2d2d2d' : '#ffffff';
-  const inputBorder = isDark ? '#4b5563' : '#d1d5db';
-  const sectionBg = isDark ? '#262626' : '#f9fafb';
+  // 使用公共样式管理器 - 简化了很多重复代码喵~
+  const vars = CommonStyles.getVars();
 
   const modalHtml = `
     <div id="batch-delete-modal">
@@ -200,41 +322,36 @@ function createBatchDeleteModal(apiInfo) {
 
   $('body').append(modalHtml);
 
-  // 添加样式
+  // 使用公共样式管理器生成样式 - 大幅简化代码喵~
   const styles = `
     #batch-delete-modal {
-      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-      background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px);
-      z-index: 10001; display: flex; align-items: center; justify-content: center;
-      padding: 20px; animation: pt-fadeIn 0.3s ease-out;
+      --pt-font-size: ${vars.fontSize};
+      ${CommonStyles.getModalBaseStyles()}
     }
     #batch-delete-modal .batch-delete-modal-content {
-      background: ${bgColor}; border-radius: 16px; padding: 24px;
-      max-width: ${isMobile ? '95vw' : '600px'}; width: 100%;
-      max-height: 80vh; overflow-y: auto; color: ${textColor};
-      box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+      ${CommonStyles.getModalContentStyles()}
     }
     #batch-delete-modal .modal-header {
-      text-align: center; margin-bottom: 20px;
-      padding-bottom: 16px; border-bottom: 1px solid ${borderColor};
+      text-align: center; margin-bottom: ${vars.margin};
+      padding-bottom: ${vars.paddingSmall}; border-bottom: 1px solid ${vars.borderColor};
     }
     #batch-delete-modal .modal-header h3 {
-      margin: 0 0 8px 0; font-size: 20px; font-weight: 700;
+      margin: 0 0 8px 0; font-size: ${vars.fontSizeLarge}; font-weight: 700;
     }
     #batch-delete-modal .modal-header p {
-      margin: 0; font-size: 14px; color: ${isDark ? '#9ca3af' : '#6b7280'};
+      margin: 0; font-size: ${vars.fontSizeMedium}; color: ${vars.tipColor};
     }
     #batch-delete-modal .preset-search {
-      margin-bottom: 16px;
+      margin-bottom: ${vars.paddingSmall};
     }
     #batch-delete-modal #preset-search {
-      width: 100%; padding: 12px 16px; background: ${inputBg};
-      color: ${textColor}; border: 1px solid ${inputBorder};
-      border-radius: 8px; font-size: 14px; box-sizing: border-box;
+      width: 100%; padding: ${vars.paddingSmall}; background: ${vars.inputBg};
+      color: ${vars.textColor}; border: 1px solid ${vars.inputBorder};
+      border-radius: ${vars.borderRadiusSmall}; font-size: ${vars.fontSizeMedium}; box-sizing: border-box;
     }
     #batch-delete-modal .preset-list {
-      max-height: 300px; overflow-y: auto; border: 1px solid ${borderColor};
-      border-radius: 8px; background: ${inputBg}; padding: 8px;
+      max-height: 300px; overflow-y: auto; border: 1px solid ${vars.borderColor};
+      border-radius: ${vars.borderRadiusSmall}; background: ${vars.inputBg}; padding: 8px;
     }
     #batch-delete-modal .preset-item {
       display: flex; align-items: center; padding: 8px 12px;
@@ -242,7 +359,7 @@ function createBatchDeleteModal(apiInfo) {
       margin-bottom: 4px;
     }
     #batch-delete-modal .preset-item:hover:not(:has(input:disabled)) {
-      background: ${sectionBg};
+      background: ${vars.sectionBg};
     }
     #batch-delete-modal .preset-item input {
       margin-right: 12px; transform: scale(1.2);
@@ -255,30 +372,30 @@ function createBatchDeleteModal(apiInfo) {
     }
     #batch-delete-modal .current-badge {
       background: #f59e0b; color: white; padding: 2px 8px;
-      border-radius: 12px; font-size: 11px; font-weight: 600;
+      border-radius: ${vars.borderRadiusMedium}; font-size: ${vars.fontSizeSmall}; font-weight: 600;
     }
     #batch-delete-modal .batch-actions {
-      display: flex; align-items: center; gap: 12px; margin: 16px 0;
-      padding: 12px; background: ${sectionBg}; border-radius: 8px;
+      display: flex; align-items: center; gap: ${vars.gap}; margin: ${vars.paddingSmall} 0;
+      padding: ${vars.paddingSmall}; background: ${vars.sectionBg}; border-radius: ${vars.borderRadiusSmall};
     }
     #batch-delete-modal .batch-actions button {
-      padding: 6px 12px; background: ${isDark ? '#4b5563' : '#6b7280'};
+      padding: ${vars.buttonPaddingSmall}; background: ${vars.tipColor};
       border: none; color: white; border-radius: 6px; cursor: pointer;
-      font-size: 12px; font-weight: 600; transition: background 0.2s ease;
+      font-size: ${vars.fontSizeSmall}; font-weight: 600; transition: background 0.2s ease;
     }
     #batch-delete-modal .batch-actions button:hover {
-      background: ${isDark ? '#6b7280' : '#4b5563'};
+      opacity: 0.8;
     }
     #batch-delete-modal #selected-count {
-      margin-left: auto; font-size: 13px; font-weight: 600;
-      color: ${isDark ? '#9ca3af' : '#6b7280'};
+      margin-left: auto; font-size: ${vars.fontSizeMedium}; font-weight: 600;
+      color: ${vars.tipColor};
     }
     #batch-delete-modal .modal-actions {
-      display: flex; gap: 12px; justify-content: center; margin-top: 20px;
+      display: flex; gap: ${vars.gap}; justify-content: center; margin-top: ${vars.margin};
     }
     #batch-delete-modal .modal-actions button {
-      padding: 12px 24px; border: none; border-radius: 8px;
-      font-size: 14px; font-weight: 600; cursor: pointer;
+      padding: ${vars.buttonPadding}; border: none; border-radius: ${vars.buttonRadius};
+      font-size: ${vars.fontSizeMedium}; font-weight: 600; cursor: pointer;
       transition: all 0.2s ease;
     }
     #batch-delete-modal #execute-batch-delete {
@@ -291,11 +408,13 @@ function createBatchDeleteModal(apiInfo) {
       background: #9ca3af; cursor: not-allowed;
     }
     #batch-delete-modal #cancel-batch-delete {
-      background: ${isDark ? '#6b7280' : '#9ca3af'}; color: white;
+      background: ${vars.tipColor}; color: white;
     }
     #batch-delete-modal #cancel-batch-delete:hover {
-      background: ${isDark ? '#4b5563' : '#6b7280'};
+      opacity: 0.8;
     }
+
+
   `;
 
   $('head').append(`<style id="batch-delete-modal-styles">${styles}</style>`);
@@ -314,15 +433,17 @@ function bindBatchDeleteEvents() {
     $('#execute-batch-delete').prop('disabled', selected === 0);
   }
 
-  // 搜索功能
-  $('#preset-search').on('input', function () {
-    const searchTerm = $(this).val().toLowerCase();
+  // 搜索功能 (添加防抖优化)
+  const debouncedPresetSearch = debounce(function () {
+    const searchTerm = $('#preset-search').val().toLowerCase();
     $('#preset-list .preset-item').each(function () {
       const presetName = $(this).find('.preset-name').text().toLowerCase();
       const matches = presetName.includes(searchTerm);
       $(this).toggle(matches);
     });
-  });
+  }, 300);
+
+  $('#preset-search').on('input', debouncedPresetSearch);
 
   // 全选/全不选
   $('#select-all-presets').on('click', function () {
@@ -784,34 +905,15 @@ const REGEX_BINDING_TYPES = {
   EXCLUSIVE: 'exclusive', // 专属正则，可被多个预设设置，切换时智能管理
 };
 
-// 获取预设的正则绑定配置
+// 获取预设的正则绑定配置（改用 PT.API 兼容层）
 function getPresetRegexBindings(presetName) {
   try {
-    // 尝试通过多种方式获取预设
-    let preset = null;
-
-    // 方法1: 尝试使用全局API
-    if (typeof window.getPreset === 'function') {
-      preset = window.getPreset(presetName);
-    } else if (typeof getPreset === 'function') {
-      preset = getPreset(presetName);
-    }
-
-    // 方法2: 通过TavernHelper获取
-    if (!preset && window.TavernHelper?.getPreset) {
-      preset = window.TavernHelper.getPreset(presetName);
-    }
-
+    const preset = PT.API.getPreset(presetName);
     if (!preset || !preset.extensions) {
       return getDefaultRegexBindings();
     }
-
     const bindings = preset.extensions.regexBindings;
-    if (!bindings) {
-      return getDefaultRegexBindings();
-    }
-
-    // 确保所有必需的字段都存在
+    if (!bindings) return getDefaultRegexBindings();
     return {
       exclusive: Array.isArray(bindings.exclusive) ? bindings.exclusive : [],
     };
@@ -821,49 +923,16 @@ function getPresetRegexBindings(presetName) {
   }
 }
 
-// 保存预设的正则绑定配置
+// 保存预设的正则绑定配置（改用 PT.API 兼容层）
 async function savePresetRegexBindings(presetName, bindings) {
   try {
-    // 尝试通过多种方式获取预设
-    let preset = null;
-
-    // 方法1: 尝试使用全局API
-    if (typeof window.getPreset === 'function') {
-      preset = window.getPreset(presetName);
-    } else if (typeof getPreset === 'function') {
-      preset = getPreset(presetName);
-    }
-
-    // 方法2: 通过TavernHelper获取
-    if (!preset && window.TavernHelper?.getPreset) {
-      preset = window.TavernHelper.getPreset(presetName);
-    }
-
-    if (!preset) {
-      throw new Error(`预设 "${presetName}" 不存在`);
-    }
-
-    // 确保 extensions 对象存在
-    if (!preset.extensions) {
-      preset.extensions = {};
-    }
-
-    // 保存绑定配置
+    const preset = PT.API.getPreset(presetName);
+    if (!preset) throw new Error(`预设 "${presetName}" 不存在`);
+    if (!preset.extensions) preset.extensions = {};
     preset.extensions.regexBindings = {
       exclusive: Array.isArray(bindings.exclusive) ? bindings.exclusive : [],
     };
-
-    // 保存预设
-    if (typeof window.replacePreset === 'function') {
-      await window.replacePreset(presetName, preset);
-    } else if (typeof replacePreset === 'function') {
-      await replacePreset(presetName, preset);
-    } else if (window.TavernHelper?.replacePreset) {
-      await window.TavernHelper.replacePreset(presetName, preset);
-    } else {
-      throw new Error('无法找到预设保存函数');
-    }
-
+    await PT.API.replacePreset(presetName, preset);
     return true;
   } catch (error) {
     console.error(`保存预设 "${presetName}" 的正则绑定配置失败:`, error);
@@ -878,20 +947,10 @@ function getDefaultRegexBindings() {
   };
 }
 
-// 获取所有可用的正则列表
+// 获取所有可用的正则列表（改用 PT.API 兼容层）
 function getAllAvailableRegexes() {
   try {
-    // 尝试通过多种方式获取正则列表
-    if (typeof window.getTavernRegexes === 'function') {
-      return window.getTavernRegexes({ scope: 'all', enable_state: 'all' });
-    } else if (typeof getTavernRegexes === 'function') {
-      return getTavernRegexes({ scope: 'all', enable_state: 'all' });
-    } else if (window.TavernHelper?.getTavernRegexes) {
-      return window.TavernHelper.getTavernRegexes({ scope: 'all', enable_state: 'all' });
-    } else {
-      console.warn('无法找到getTavernRegexes函数');
-      return [];
-    }
+    return PT.API.getTavernRegexes({ scope: 'all', enable_state: 'all' }) || [];
   } catch (error) {
     console.error('获取正则列表失败:', error);
     return [];
@@ -961,8 +1020,7 @@ async function switchPresetRegexes(fromPresetName, toPresetName) {
       return true;
     }
 
-    // 显示用户反馈
-    showRegexSwitchingFeedback(toEnable, toDisable, regexMap);
+    // 已移除切换时的弹窗提示
 
     // 执行正则更新
     const updateFunction = regexes => {
@@ -981,24 +1039,14 @@ async function switchPresetRegexes(fromPresetName, toPresetName) {
       return regexes;
     };
 
-    // 尝试通过多种方式更新正则
-    if (typeof window.updateTavernRegexesWith === 'function') {
-      await window.updateTavernRegexesWith(updateFunction);
-    } else if (typeof updateTavernRegexesWith === 'function') {
-      await updateTavernRegexesWith(updateFunction);
-    } else if (window.TavernHelper?.updateTavernRegexesWith) {
-      await window.TavernHelper.updateTavernRegexesWith(updateFunction);
-    } else {
-      throw new Error('无法找到updateTavernRegexesWith函数');
-    }
+    // 通过 PT.API 统一更新正则
+    await PT.API.updateTavernRegexesWith(updateFunction);
 
-    // 隐藏反馈
-    hideRegexSwitchingFeedback();
+    // 已移除切换时的弹窗提示
 
     return true;
   } catch (error) {
     console.error('切换正则失败:', error);
-    hideRegexSwitchingFeedback();
 
     // 显示错误提示
     if (window.toastr) {
@@ -1022,14 +1070,18 @@ function showRegexSwitchingFeedback(toEnable, toDisable, regexMap) {
     return;
   }
 
-  const totalChanges = toEnable.length + toDisable.length;
-  const message = `✅ 已开启绑定正则 (${totalChanges}个)`;
+  // 获取当前字体大小设置
+  const savedSize = localStorage.getItem('preset-transfer-font-size');
+  const currentFontSize = savedSize ? parseInt(savedSize) : 16;
+
+  const message = `✅ 已开启绑定正则`;
 
   const feedback = $(`
     <div id="regex-switching-feedback" style="
+      --pt-font-size: ${CommonStyles.getVars().fontSize};
       position: fixed; top: 80px; left: 50%; transform: translateX(-50%); z-index: 10002;
       background: rgba(0, 0, 0, 0.85); color: white; padding: 10px 20px;
-      border-radius: 6px; font-size: 13px; font-weight: 500;
+      border-radius: 6px; font-size: calc(var(--pt-font-size) * 0.8125); font-weight: 500;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
       border: 1px solid rgba(255, 255, 255, 0.1);
     ">
@@ -1103,113 +1155,62 @@ let globalPresetListener = {
     this.isActive = false;
   },
 
-  // 获取当前预设名称
+  // 获取当前预设名称（统一到 PT.API）
   getCurrentPresetName() {
     try {
-      if (typeof window.getLoadedPresetName === 'function') {
-        return window.getLoadedPresetName();
-      } else if (typeof getLoadedPresetName === 'function') {
-        return getLoadedPresetName();
-      } else if (window.TavernHelper?.getLoadedPresetName) {
-        return window.TavernHelper.getLoadedPresetName();
-      }
-      return null;
+      return PT.API.getLoadedPresetName?.() ?? null;
     } catch (error) {
       console.warn('获取当前预设名称失败:', error);
       return null;
     }
   },
 
-  // 监听酒馆原生预设事件
+  // 监听酒馆原生预设事件（统一到 PT.API）
   listenToPresetEvents() {
     try {
       const self = this;
-
-      // 方法1: 监听 preset_changed 事件
-      if (typeof eventOn === 'function') {
-        eventOn('preset_changed', data => {
-          // 解析预设名称，可能是字符串或对象
-          let presetName = data;
-          if (typeof data === 'object' && data !== null) {
-            presetName = data.name || data.presetName || data.preset || String(data);
-          }
-          if (presetName && typeof presetName === 'string') {
-            self.handlePresetChange(self.currentPreset, presetName);
-          }
-        });
-      } else if (window.eventOn) {
-        window.eventOn('preset_changed', data => {
-          // 解析预设名称，可能是字符串或对象
-          let presetName = data;
-          if (typeof data === 'object' && data !== null) {
-            presetName = data.name || data.presetName || data.preset || String(data);
-          }
-          if (presetName && typeof presetName === 'string') {
-            self.handlePresetChange(self.currentPreset, presetName);
-          }
-        });
-      }
-
-      // 方法2: 监听可能的其他事件
-      const eventNames = ['PRESET_CHANGED', 'presetChanged', 'preset-changed'];
-      eventNames.forEach(eventName => {
-        try {
-          if (typeof eventOn === 'function') {
-            eventOn(eventName, presetName => {
-              console.log(`事件监听检测到预设切换 (${eventName}): ${self.currentPreset} -> ${presetName}`);
-              self.handlePresetChange(self.currentPreset, presetName);
-            });
-          }
-        } catch (e) {
-          // 忽略不存在的事件
+      const handle = data => {
+        let presetName = data;
+        if (typeof data === 'object' && data !== null) {
+          presetName = data.name || data.presetName || data.preset || String(data);
         }
+        if (presetName && typeof presetName === 'string') {
+          self.handlePresetChange(self.currentPreset, presetName);
+        }
+      };
+      PT.API.eventOn?.('preset_changed', handle);
+      ['PRESET_CHANGED', 'presetChanged', 'preset-changed'].forEach(evt => {
+        try {
+          PT.API.eventOn?.(evt, pn => {
+            console.log(`事件监听检测到预设切换 (${evt}): ${self.currentPreset} -> ${pn}`);
+            self.handlePresetChange(self.currentPreset, pn);
+          });
+        } catch (_) {}
       });
     } catch (error) {
       console.warn('监听预设事件失败:', error);
     }
   },
 
-  // Hook loadPreset 函数
+  // Hook loadPreset 函数（尽量用 PT.API.loadPreset）
   hookLoadPreset() {
     try {
-      // 尝试找到 loadPreset 函数
-      let loadPresetFunc = null;
-
-      if (typeof window.loadPreset === 'function') {
-        loadPresetFunc = window.loadPreset;
-      } else if (typeof loadPreset === 'function') {
-        loadPresetFunc = loadPreset;
-        window.loadPreset = loadPreset; // 确保在window上也有引用
-      } else if (window.TavernHelper?.loadPreset) {
-        loadPresetFunc = window.TavernHelper.loadPreset;
-        window.loadPreset = window.TavernHelper.loadPreset;
-      }
-
+      let loadPresetFunc = PT.API.loadPreset;
       if (!loadPresetFunc) {
         console.warn('未找到 loadPreset 函数，跳过Hook');
         return;
       }
-
-      // 保存原始函数
       this.originalLoadPreset = loadPresetFunc;
-
-      // 创建Hook函数
       const self = this;
       window.loadPreset = function (presetName) {
         const previousPreset = self.getCurrentPresetName();
         console.log(`Hook检测到预设切换: ${previousPreset} -> ${presetName}`);
-
-        // 调用原始函数
         const result = self.originalLoadPreset.call(this, presetName);
-
-        // 如果切换成功，执行正则切换
         if (result && presetName !== previousPreset) {
           self.handlePresetChange(previousPreset, presetName);
         }
-
         return result;
       };
-
       console.log('loadPreset 函数Hook成功');
     } catch (error) {
       console.error('Hook loadPreset 函数失败:', error);
@@ -1223,16 +1224,16 @@ let globalPresetListener = {
       clearInterval(this.pollInterval);
     }
 
-    // 开始新的轮询（每3秒检测一次）
+    // 开始新的轮询（每6秒检测一次，事件/Hook 正常时会停用）
     this.pollInterval = setInterval(() => {
       const newPreset = this.getCurrentPresetName();
       if (newPreset && newPreset !== this.currentPreset) {
         console.log(`轮询检测到预设切换: ${this.currentPreset} -> ${newPreset}`);
         this.handlePresetChange(this.currentPreset, newPreset);
       }
-    }, 3000);
+    }, 6000);
 
-    console.log('预设轮询检测已启动');
+    console.log('预设轮询检测已启动(6s)');
   },
 
   // 处理预设切换
@@ -1250,9 +1251,34 @@ let globalPresetListener = {
       // 执行正则切换
       await switchPresetRegexes(fromPreset, toPreset);
 
-      // 更新工具界面的状态显示（如果工具已打开）
+      // 更新工具界面与原生折叠面板状态（如果已存在）
       if (toPreset) {
         updatePresetRegexStatus(toPreset);
+        if (typeof updateNativeRegexPanel === 'function') {
+          updateNativeRegexPanel(toPreset);
+          // 如果面板已展开，刷新列表并保持筛选与展开状态
+          try {
+            const panel = $('#st-native-regex-panel');
+            if (panel.length) {
+              const $content = panel.find('.content');
+              const expanded = $content.is(':visible');
+              const searchVal = $('#rb-search').val();
+              const filterVal = $('#rb-filter').val();
+              if (expanded) {
+                renderNativeRegexBindingContent(toPreset);
+                bindNativeRegexBindingPanelEvents(toPreset);
+                if (searchVal) $('#rb-search').val(searchVal);
+                if (filterVal) $('#rb-filter').val(filterVal);
+              }
+            }
+          } catch (_) {}
+        }
+        // 事件/Hook 成功回调一次后，停用轮询降低占用
+        if (this.pollInterval) {
+          clearInterval(this.pollInterval);
+          this.pollInterval = null;
+          console.log('事件/Hook 正常，已停止轮询');
+        }
       }
     } catch (error) {
       console.error('处理预设切换失败:', error);
@@ -1262,192 +1288,25 @@ let globalPresetListener = {
   },
 };
 
-// 创建正则绑定配置对话框
+// 旧的“正则绑定配置”弹窗已弃用，改为原生面板内联编辑；保留函数名避免旧调用报错
 function createRegexBindingModal(presetName) {
-  const $ = getJQuery();
-  const { isMobile, isSmallScreen } = getDeviceInfo();
-  const isDark = isDarkTheme();
-
-  // 移除已存在的对话框
-  $('#regex-binding-modal').remove();
-
-  // 获取当前预设的绑定配置
-  const currentBindings = getPresetRegexBindings(presetName);
-  const allRegexes = getAllAvailableRegexes();
-
-  if (allRegexes.length === 0) {
-    alert('当前没有可用的正则表达式');
-    return;
+  try {
+    ensureNativeRegexPanelInjected();
+    const panel = $('#st-native-regex-panel');
+    const $content = panel.find('.content');
+    if (!$content.is(':visible')) {
+      $content.slideDown(150);
+      $('#st-regex-toggle').text('▼');
+    }
+    // 总是根据传入或当前预设渲染
+    const name = presetName || PT.API.getLoadedPresetName?.();
+    if (name) {
+      renderNativeRegexBindingContent(name);
+      bindNativeRegexBindingPanelEvents(name);
+    }
+  } catch (e) {
+    console.warn('打开原生面板失败:', e);
   }
-
-  const bgColor = isDark ? '#1a1a1a' : '#ffffff';
-  const textColor = isDark ? '#e0e0e0' : '#374151';
-  const borderColor = isDark ? '#374151' : '#e5e7eb';
-  const inputBg = isDark ? '#2d2d2d' : '#ffffff';
-  const sectionBg = isDark ? '#262626' : '#f9fafb';
-
-  const modalHtml = `
-    <div id="regex-binding-modal">
-      <div class="regex-binding-modal-content">
-        <div class="modal-header">
-          <h3>🔗 正则绑定配置</h3>
-          <p>为预设 "${presetName}" 配置正则表达式绑定</p>
-        </div>
-        <div class="binding-explanation">
-          <div class="explanation-item">
-            <span class="type-badge exclusive">专属</span>
-            <span>绑定到特定预设，切换时自动开启/关闭</span>
-          </div>
-          <div class="explanation-item">
-            <span class="type-badge unbound">通用</span>
-            <span>不绑定到预设，保持用户手动设置的状态</span>
-          </div>
-        </div>
-        <div class="regex-list-container">
-          <div class="regex-search">
-            <input type="text" id="regex-search" placeholder="🔍 搜索正则...">
-          </div>
-          <div class="regex-list" id="regex-list">
-            ${generateGroupedRegexList(allRegexes, currentBindings)}
-          </div>
-        </div>
-        <div class="modal-actions">
-          <button id="save-regex-bindings">💾 保存</button>
-          <button id="cancel-regex-bindings">❌ 取消</button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  $('body').append(modalHtml);
-
-  // 添加样式
-  const styles = `
-    #regex-binding-modal {
-      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-      background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px);
-      z-index: 10001; display: flex; align-items: center; justify-content: center;
-      padding: 20px; animation: pt-fadeIn 0.3s ease-out;
-    }
-    #regex-binding-modal .regex-binding-modal-content {
-      background: ${bgColor}; border-radius: 16px; padding: 24px;
-      max-width: ${isMobile ? '95vw' : '700px'}; width: 100%;
-      max-height: 80vh; overflow-y: auto; color: ${textColor};
-      box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-    }
-    #regex-binding-modal .modal-header {
-      text-align: center; margin-bottom: 20px;
-      padding-bottom: 16px; border-bottom: 1px solid ${borderColor};
-    }
-    #regex-binding-modal .modal-header h3 {
-      margin: 0 0 8px 0; font-size: 20px; font-weight: 700;
-    }
-    #regex-binding-modal .modal-header p {
-      margin: 0; font-size: 14px; color: ${isDark ? '#9ca3af' : '#6b7280'};
-    }
-    #regex-binding-modal .binding-explanation {
-      background: ${sectionBg}; border-radius: 8px; padding: 16px; margin-bottom: 20px;
-    }
-    #regex-binding-modal .explanation-item {
-      display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
-    }
-    #regex-binding-modal .explanation-item:last-child {
-      margin-bottom: 0;
-    }
-    #regex-binding-modal .type-badge {
-      padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: 600;
-      min-width: 60px; text-align: center;
-    }
-    #regex-binding-modal .type-badge.exclusive {
-      background: #f59e0b; color: white;
-    }
-    #regex-binding-modal .type-badge.unbound {
-      background: #6b7280; color: white;
-    }
-    #regex-binding-modal .regex-search {
-      margin-bottom: 16px;
-    }
-    #regex-binding-modal #regex-search {
-      width: 100%; padding: 12px 16px; background: ${inputBg};
-      color: ${textColor}; border: 1px solid ${borderColor};
-      border-radius: 8px; font-size: 14px; box-sizing: border-box;
-    }
-    #regex-binding-modal .regex-list {
-      max-height: 400px; overflow-y: auto; border: 1px solid ${borderColor};
-      border-radius: 8px; background: ${inputBg};
-    }
-    #regex-binding-modal .regex-item {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 12px 16px; border-bottom: 1px solid ${borderColor};
-    }
-    #regex-binding-modal .regex-item:last-child {
-      border-bottom: none;
-    }
-    #regex-binding-modal .regex-info {
-      flex: 1;
-    }
-    #regex-binding-modal .regex-name {
-      font-weight: 600; margin-bottom: 4px;
-    }
-    #regex-binding-modal .regex-status {
-      font-size: 12px;
-    }
-    #regex-binding-modal .regex-status.enabled {
-      color: #10b981;
-    }
-    #regex-binding-modal .regex-status.disabled {
-      color: #ef4444;
-    }
-    #regex-binding-modal .binding-controls {
-      margin-left: 16px;
-    }
-    #regex-binding-modal .binding-type-select {
-      padding: 6px 12px; background: ${inputBg}; color: ${textColor};
-      border: 1px solid ${borderColor}; border-radius: 6px; font-size: 14px;
-    }
-    #regex-binding-modal .modal-actions {
-      display: flex; gap: 12px; justify-content: center; margin-top: 20px;
-      padding-top: 16px; border-top: 1px solid ${borderColor};
-    }
-    #regex-binding-modal .modal-actions button {
-      padding: 12px 24px; border: none; border-radius: 8px;
-      font-size: 14px; font-weight: 600; cursor: pointer;
-      transition: all 0.2s ease;
-    }
-    #regex-binding-modal #save-regex-bindings {
-      background: #10b981; color: white;
-    }
-    #regex-binding-modal #save-regex-bindings:hover {
-      background: #059669;
-    }
-    #regex-binding-modal #cancel-regex-bindings {
-      background: ${isDark ? '#6b7280' : '#9ca3af'}; color: white;
-    }
-    #regex-binding-modal #cancel-regex-bindings:hover {
-      background: ${isDark ? '#4b5563' : '#6b7280'};
-    }
-
-    /* 分组样式 */
-    #regex-binding-modal .regex-group { margin-bottom: 8px; border: 1px solid ${borderColor}; border-radius: 6px; background: ${sectionBg}; }
-    #regex-binding-modal .group-header { display: flex; align-items: center; padding: 8px 12px; cursor: pointer; background: ${
-      isDark ? '#374151' : '#f3f4f6'
-    }; border-radius: 6px 6px 0 0; user-select: none; }
-    #regex-binding-modal .group-header:hover { background: ${isDark ? '#4b5563' : '#e5e7eb'}; }
-    #regex-binding-modal .group-toggle { margin-right: 8px; font-size: 12px; transition: transform 0.2s; }
-    #regex-binding-modal .group-name { font-weight: 600; flex: 1; }
-    #regex-binding-modal .group-count { font-size: 12px; color: ${isDark ? '#9ca3af' : '#6b7280'}; margin-right: 12px; }
-    #regex-binding-modal .group-batch-select { padding: 4px 6px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${borderColor}; border-radius: 4px; font-size: 12px; width: 80px; margin-left: auto; }
-    #regex-binding-modal .group-content { overflow: hidden; transition: all 0.3s ease; }
-    #regex-binding-modal .group-content.collapsed { max-height: 0 !important; }
-    #regex-binding-modal .group-content.expanded { max-height: 500px !important; overflow-y: auto; }
-    #regex-binding-modal .regex-group .regex-item { border-bottom: 1px solid ${borderColor}; margin: 0; }
-    #regex-binding-modal .regex-group .regex-item:last-child { border-bottom: none; }
-  `;
-
-  $('head').append(`<style id="regex-binding-modal-styles">${styles}</style>`);
-
-  // 绑定事件
-  bindRegexBindingEvents(presetName);
 }
 
 // 获取正则在当前绑定配置中的类型
@@ -1456,195 +1315,74 @@ function getCurrentRegexBindingType(regexId, bindings) {
   return '';
 }
 
-// 生成分组的正则列表HTML
-function generateGroupedRegexList(allRegexes, currentBindings) {
+// RegexList 组件：统一渲染与绑定（原生面板专用）
+function renderRegexListComponent({ regexes, bindings }) {
+  const getGroupName = name => {
+    const m = (name || '').match(/^(【[^】]+】|[^-\[\]_.]+[-\[\]_.])/);
+    let g = m ? m[1].replace(/[-\[\]_.]$/, '').replace(/^【|】$/g, '') : '未分组';
+    g = (g || '未分组').replace(/['"\\]/g, '').trim();
+    return g.length ? g : '未分组';
+  };
+
   const groups = new Map();
-  const ungrouped = [];
-
-  // 分组正则
-  allRegexes.forEach(regex => {
-    const match = regex.script_name.match(/^(【[^】]+】|[^-\[\]_.]+[-\[\]_.])/);
-    let groupName = match ? match[1].replace(/[-\[\]_.]$/, '').replace(/^【|】$/g, '') : null;
-
-    // 清理分组名称，移除可能导致选择器问题的字符
-    if (groupName) {
-      groupName = groupName.replace(/['"\\]/g, '').trim();
-      if (groupName.length > 0) {
-        if (!groups.has(groupName)) groups.set(groupName, []);
-        groups.get(groupName).push(regex);
-      } else {
-        ungrouped.push(regex);
-      }
-    } else {
-      ungrouped.push(regex);
-    }
+  regexes.forEach(r => {
+    const g = getGroupName(r.script_name || String(r.id));
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(r);
   });
 
-  let html = '';
-
-  // 生成分组和单项HTML
-  for (const [groupName, regexes] of groups) {
-    if (regexes.length > 1) {
-      const safeGroupName = groupName.replace(/"/g, '&quot;');
-      html += `<div class="regex-group">
-        <div class="group-header" data-group="${safeGroupName}">
-          <span class="group-toggle">▶</span>
-          <span class="group-name">${groupName}</span>
-          <span class="group-count">(${regexes.length}个)</span>
-          <select class="group-batch-select" data-group="${safeGroupName}">
-            <option value="">批量设置</option>
-            <option value="">通用</option>
-            <option value="exclusive">专属</option>
-          </select>
-        </div>
-        <div class="group-content collapsed" data-group="${safeGroupName}">
-          ${regexes.map(r => generateRegexItemHTML(r, currentBindings)).join('')}
-        </div>
+  const renderItem = r => {
+    const checked = bindings.exclusive.includes(r.id);
+    const safeId = String(r.id).replace(/"/g, '&quot;');
+    const safeName = escapeHtml(r.script_name || String(r.id));
+    const stateIcon = r.enabled ? '●' : '○'; // 性冷淡风格：实心圆/空心圆
+    const labelClass = checked ? 'bound' : 'unbound';
+    const badge = checked ? '<span class="badge menu_button">已绑定</span>' : '<span class="badge">未绑定</span>';
+    return `
+      <div class="regex-row" data-id="${safeId}">
+        <label class="rb-label ${labelClass}">
+          <input type="checkbox" class="rb-exclusive" ${checked ? 'checked' : ''} />
+          <span class="name">${safeName}</span>
+          ${badge}
+          <span class="state">${stateIcon}</span>
+        </label>
       </div>`;
-    } else {
-      ungrouped.push(...regexes);
-    }
-  }
+  };
 
-  return html + ungrouped.map(r => generateRegexItemHTML(r, currentBindings)).join('');
-}
+  const groupsHtml = Array.from(groups.entries())
+    .map(([gName, items]) => {
+      const boundCount = items.filter(r => bindings.exclusive.includes(r.id)).length;
+      const total = items.length;
+      const rows = items.map(renderItem).join('');
+      return `
+        <div class="rb-group" data-group="${escapeHtml(gName)}">
+          <div class="rb-group-title">
+            <span class="rb-group-toggle">▶</span>
+            <span class="rb-group-name">${escapeHtml(gName)}</span>
+            <span class="rb-group-count">${boundCount}/${total}</span>
+            <button class="rb-group-batch-btn menu_button">批量</button>
+          </div>
+          <div class="rb-group-content collapsed">
+            ${rows}
+          </div>
+        </div>`;
+    })
+    .join('');
 
-// 生成单个正则项HTML
-function generateRegexItemHTML(regex, currentBindings) {
-  const type = getCurrentRegexBindingType(regex.id, currentBindings);
-  return `<div class="regex-item" data-regex-id="${regex.id}">
-    <div class="regex-info">
-      <div class="regex-name">${regex.script_name}</div>
-      <div class="regex-status ${regex.enabled ? 'enabled' : 'disabled'}">
-        ${regex.enabled ? '✅' : '❌'}
-      </div>
-    </div>
-    <div class="binding-controls">
-      <select class="binding-type-select" data-regex-id="${regex.id}">
-        <option value="">通用</option>
-        <option value="exclusive" ${type === 'exclusive' ? 'selected' : ''}>专属</option>
+  const toolbar = `
+    <div class="rb-toolbar">
+      <input id="rb-search" class="text_pole" placeholder="搜索..." />
+      <select id="rb-filter" class="text_pole">
+        <option value="all">全部</option>
+        <option value="bound">已绑定</option>
+        <option value="unbound">未绑定</option>
+        <option value="enabled">已启用</option>
+        <option value="disabled">未启用</option>
       </select>
-    </div>
-  </div>`;
-}
+      <button id="rb-save" class="menu_button">保存</button>
+    </div>`;
 
-// 绑定正则绑定对话框的事件
-function bindRegexBindingEvents(presetName) {
-  const $ = getJQuery();
-
-  // 分组折叠展开
-  $('#regex-binding-modal').on('click', '.group-header', function (e) {
-    if ($(e.target).is('select')) return;
-    const group = $(this).data('group');
-    const $content = $(`#regex-binding-modal .group-content[data-group="${group}"]`);
-    const $toggle = $(this).find('.group-toggle');
-
-    if ($content.hasClass('collapsed')) {
-      $content.removeClass('collapsed').addClass('expanded');
-      $toggle.text('▼');
-    } else {
-      $content.removeClass('expanded').addClass('collapsed');
-      $toggle.text('▶');
-    }
-  });
-
-  // 分组批量设置
-  $('#regex-binding-modal').on('change', '.group-batch-select', function () {
-    const group = $(this).data('group');
-    const type = $(this).val();
-    $(`#regex-binding-modal .group-content[data-group="${group}"] .binding-type-select`).val(type);
-    $(this).val('');
-  });
-
-  // 搜索功能
-  $('#regex-search').on('input', function () {
-    const term = $(this).val().toLowerCase();
-    $('#regex-list .regex-item').each(function () {
-      $(this).toggle($(this).find('.regex-name').text().toLowerCase().includes(term));
-    });
-    $('#regex-list .regex-group').each(function () {
-      const groupMatch = $(this).find('.group-name').text().toLowerCase().includes(term);
-      const hasVisible = $(this).find('.regex-item:visible').length > 0;
-      $(this).toggle(groupMatch || hasVisible);
-    });
-  });
-
-  // 保存配置
-  $('#save-regex-bindings').on('click', async function () {
-    const $button = $(this);
-    const originalText = $button.text();
-    $button.prop('disabled', true).text('保存中...');
-
-    try {
-      // 收集所有绑定配置
-      const newBindings = {
-        exclusive: [],
-      };
-
-      $('.binding-type-select').each(function () {
-        const $select = $(this);
-        const regexId = $select.data('regex-id');
-        const bindingType = $select.val();
-
-        if (bindingType === 'exclusive') {
-          newBindings.exclusive.push(regexId);
-        }
-      });
-
-      // 保存配置
-      const success = await savePresetRegexBindings(presetName, newBindings);
-
-      if (success) {
-        // 显示成功提示
-        if (window.toastr) {
-          toastr.success('正则绑定配置已保存');
-        } else {
-          alert('正则绑定配置已保存');
-        }
-
-        // 关闭对话框
-        $('#regex-binding-modal').remove();
-        $('#regex-binding-modal-styles').remove();
-
-        // 更新预设状态显示
-        updatePresetRegexStatus(presetName);
-      } else {
-        throw new Error('保存失败');
-      }
-    } catch (error) {
-      console.error('保存正则绑定配置失败:', error);
-      if (window.toastr) {
-        toastr.error('保存失败: ' + error.message);
-      } else {
-        alert('保存失败: ' + error.message);
-      }
-    } finally {
-      $button.prop('disabled', false).text(originalText);
-    }
-  });
-
-  // 取消按钮
-  $('#cancel-regex-bindings').on('click', function () {
-    $('#regex-binding-modal').remove();
-    $('#regex-binding-modal-styles').remove();
-  });
-
-  // 点击背景关闭
-  $('#regex-binding-modal').on('click', function (e) {
-    if (e.target === this) {
-      $(this).remove();
-      $('#regex-binding-modal-styles').remove();
-    }
-  });
-
-  // ESC键关闭
-  $(getParentWindow().document).on('keydown.regex-binding', function (e) {
-    if (e.key === 'Escape') {
-      $('#regex-binding-modal').remove();
-      $('#regex-binding-modal-styles').remove();
-      $(getParentWindow().document).off('keydown.regex-binding');
-    }
-  });
+  return { html: toolbar + `<div id="rb-groups" class="groups">${groupsHtml}</div>` };
 }
 
 // 更新预设的正则状态显示
@@ -1657,25 +1395,249 @@ function updatePresetRegexStatus(presetName) {
   const leftPreset = $('#left-preset').val();
   const rightPreset = $('#right-preset').val();
 
-  if (leftPreset === presetName) {
-    const $button = $('#regex-binding-left');
-    $button.attr('title', `配置正则绑定 (已绑定 ${totalBindings} 个)`);
-    if (totalBindings > 0) {
-      $button.addClass('has-bindings');
-    } else {
-      $button.removeClass('has-bindings');
-    }
+  // 左右侧旧按钮已移除，状态仅在面板内展示
+}
+
+// 在原生页面中注入“正则绑定/切换”折叠面板（默认折叠）
+function ensureNativeRegexPanelInjected() {
+  const $ = getJQuery();
+  const container = $('#openai_api-presets');
+  if (!container.length) return false;
+  if ($('#st-native-regex-panel').length) return true;
+
+  // 使用酒馆原生样式类，最小化自定义CSS - 完全跟随美化主题
+  if (!$('#st-native-regex-styles').length) {
+    $('head').append(`
+      <style id="st-native-regex-styles">
+        /* 简化样式 - 跟随酒馆美化主题 */
+        #st-native-regex-panel { margin-top: 10px; }
+        #st-native-regex-panel .header { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+        #st-native-regex-panel .header .title { font-weight: 600; }
+        #st-native-regex-panel .rb-group { margin-bottom: 8px; }
+        #st-native-regex-panel .rb-group-title { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 6px 10px; user-select: none; }
+        #st-native-regex-panel .rb-group-toggle { width: 16px; text-align: center; }
+        #st-native-regex-panel .rb-group-name { flex: 1; }
+        #st-native-regex-panel .rb-group-count { opacity: 0.7; font-size: 12px; }
+        #st-native-regex-panel .rb-group-content.collapsed { display: none; }
+        #st-native-regex-panel .rb-label { display: flex; align-items: center; gap: 8px; padding: 6px 10px; }
+        #st-native-regex-panel .rb-label .name { flex: 1; }
+        #st-native-regex-panel .rb-label .badge { padding: 2px 6px; border-radius: 3px; font-size: 11px; white-space: nowrap; }
+        #st-native-regex-panel .rb-label.unbound .badge { opacity: 0.6; }
+        #st-native-regex-panel .rb-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+        #st-native-regex-panel .rb-toolbar input { flex: 1; min-width: 160px; }
+        #st-native-regex-panel .rb-toolbar button, #st-native-regex-panel .rb-group-batch-btn { white-space: nowrap; }
+        /* 隐藏滚动条 */
+        #st-native-regex-panel .content::-webkit-scrollbar { display: none; }
+        #st-native-regex-panel .content { scrollbar-width: none; -ms-overflow-style: none; }
+      </style>
+    `);
   }
 
-  if (rightPreset === presetName) {
-    const $button = $('#regex-binding-right');
-    $button.attr('title', `配置正则绑定 (已绑定 ${totalBindings} 个)`);
-    if (totalBindings > 0) {
-      $button.addClass('has-bindings');
-    } else {
-      $button.removeClass('has-bindings');
-    }
+  const html = `
+    <div id="st-native-regex-panel">
+      <div class="header">
+        <button id="st-regex-toggle" class="menu_button" title="展开/折叠">▶</button>
+        <span class="title">正则绑定</span>
+        <div style="flex:1;"></div>
+      </div>
+      <div class="content" style="display:none; max-height:50vh; overflow:auto; padding:10px;">
+        <div id="st-regex-binding-status" style="opacity: .9;">加载中...</div>
+      </div>
+    </div>`;
+
+  container.append(html);
+  bindNativeRegexPanelEvents();
+  const current = PT.API.getLoadedPresetName?.();
+  if (current) updateNativeRegexPanel(current);
+  return true;
+}
+
+function renderNativeRegexBindingContent(presetName) {
+  const $ = getJQuery();
+  const panel = $('#st-native-regex-panel');
+  if (!panel.length) return;
+  const bindings = getPresetRegexBindings(presetName);
+  const allRegexes = getAllAvailableRegexes();
+  const comp = renderRegexListComponent({ regexes: allRegexes, bindings });
+  panel.find('.content').html(comp.html);
+}
+
+function bindNativeRegexBindingPanelEvents(presetName) {
+  const $ = getJQuery();
+  const panel = $('#st-native-regex-panel');
+  if (!panel.length) return;
+
+  // 分组折叠/展开
+
+  // 分组折叠/展开（标题行点击）
+  $('#rb-groups')
+    .off('click', '.rb-group-title')
+    .on('click', '.rb-group-title', function (e) {
+      // 点击批量设置按钮不折叠
+      if ($(e.target).closest('.rb-group-batch-btn').length) return;
+      const $title = $(this);
+      const $content = $title.next('.rb-group-content');
+      const $toggle = $title.find('.rb-group-toggle');
+      const collapsed = $content.hasClass('collapsed');
+      $content.toggleClass('collapsed', !collapsed);
+      $toggle.text(collapsed ? '▼' : '▶');
+    });
+
+  // 组级批量设置按钮
+  $('#rb-groups')
+    .off('click', '.rb-group-batch-btn')
+    .on('click', '.rb-group-batch-btn', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      const $group = $(this).closest('.rb-group');
+      const $rows = $group.find('.regex-row');
+      // 简化批量操作
+      const actions = [
+        { fn: $rows => $rows.find('.rb-exclusive').prop('checked', true) },
+        { fn: $rows => $rows.find('.rb-exclusive').prop('checked', false) },
+        {
+          fn: $rows =>
+            $rows.find('.rb-exclusive').each(function () {
+              $(this).prop('checked', !$(this).is(':checked'));
+            }),
+        },
+      ];
+      const choice = window.prompt('1=全部绑定, 2=全部取消, 3=反选');
+      const idx = { 1: 0, 2: 1, 3: 2 }[choice?.trim?.()] ?? -1;
+      if (idx >= 0) {
+        actions[idx].fn($rows);
+        // 同步标签
+        $rows.find('.rb-label').each(function () {
+          const checked = $(this).find('.rb-exclusive').is(':checked');
+          $(this)
+            .toggleClass('bound', checked)
+            .toggleClass('unbound', !checked)
+            .find('.badge')
+            .text(checked ? '已绑定' : '未绑定')
+            .toggleClass('menu_button', checked);
+        });
+      }
+    });
+
+  // 搜索过滤 + 筛选
+  const applyRegexListFilter = () => {
+    const term = ($('#rb-search').val() || '').toLowerCase();
+    const mode = $('#rb-filter').val();
+    $('#rb-groups .rb-group').each(function () {
+      let anyVisible = false;
+      $(this)
+        .find('.regex-row')
+        .each(function () {
+          const name = $(this).find('.name').text().toLowerCase();
+          const isBound = $(this).find('.rb-exclusive').is(':checked');
+          const enabledIcon = $(this).find('.state').text().trim();
+          const isEnabled = enabledIcon === '●';
+          const matchTerm = !term || name.includes(term);
+          const matchMode =
+            mode === 'all' ||
+            (mode === 'bound' && isBound) ||
+            (mode === 'unbound' && !isBound) ||
+            (mode === 'enabled' && isEnabled) ||
+            (mode === 'disabled' && !isEnabled);
+          const visible = matchTerm && matchMode;
+          $(this).toggle(visible);
+          anyVisible = anyVisible || visible;
+        });
+      $(this).toggle(anyVisible);
+    });
+  };
+  // 添加防抖优化的正则搜索
+  const debouncedRegexSearch = debounce(applyRegexListFilter, 300);
+  $('#rb-search').off('input').on('input', debouncedRegexSearch);
+  $('#rb-filter').off('change').on('change', applyRegexListFilter);
+
+  // 保存绑定（直接写入 preset）
+  $('#rb-save')
+    .off('click')
+    .on('click', async function () {
+      try {
+        const exclusive = [];
+        $('#rb-groups .regex-row').each(function () {
+          const id = $(this).data('id');
+          const isExclusive = $(this).find('.rb-exclusive').is(':checked');
+          if (isExclusive) exclusive.push(id);
+        });
+        const ok = await savePresetRegexBindings(presetName, { exclusive });
+        if (ok) {
+          updateNativeRegexPanel(presetName);
+
+          // 立即刷新正则启用禁用状态
+          try {
+            await switchPresetRegexes(null, presetName);
+            // 重新渲染界面以显示最新的启用禁用状态
+            renderNativeRegexBindingContent(presetName);
+            bindNativeRegexBindingPanelEvents(presetName);
+            if (window.toastr) toastr.success('正则绑定配置已保存并生效');
+          } catch (switchError) {
+            console.error('应用正则绑定失败:', switchError);
+            if (window.toastr) toastr.warning('正则绑定配置已保存，但应用失败: ' + switchError.message);
+          }
+        } else {
+          if (window.toastr) toastr.error('保存失败');
+        }
+      } catch (e) {
+        console.error('保存绑定失败:', e);
+        if (window.toastr) toastr.error('保存失败: ' + e.message);
+      }
+    });
+}
+
+function bindNativeRegexPanelEvents() {
+  const $ = getJQuery();
+  const panel = $('#st-native-regex-panel');
+  if (!panel.length) return;
+  $('#st-regex-toggle')
+    .off('click')
+    .on('click', function () {
+      const $content = panel.find('.content');
+      const wasOpen = $content.is(':visible');
+      $content.slideToggle(150);
+      $(this).text(wasOpen ? '▶' : '▼');
+      if (!wasOpen) {
+        try {
+          const presetName = PT.API.getLoadedPresetName?.();
+          if (presetName) {
+            renderNativeRegexBindingContent(presetName);
+            bindNativeRegexBindingPanelEvents(presetName);
+          } else {
+            panel.find('#st-regex-binding-status').text('未检测到当前预设');
+          }
+        } catch (e) {
+          console.error('[RegexPanel] 展开面板失败:', e);
+          if (window.toastr) toastr.error('打开绑定界面失败: ' + e.message);
+        }
+      }
+    });
+}
+
+function updateNativeRegexPanel(presetName) {
+  try {
+    const $ = getJQuery();
+    const panel = $('#st-native-regex-panel');
+
+    if (!panel.length) return;
+    const bindings = getPresetRegexBindings(presetName);
+    const count = Array.isArray(bindings.exclusive) ? bindings.exclusive.length : 0;
+    panel.find('#st-regex-binding-status').text(`预设: ${presetName}（已绑定 ${count} 个专属正则）`);
+  } catch (e) {
+    console.warn('更新原生正则面板失败:', e);
   }
+}
+
+function initNativeRegexPanelIntegration() {
+  // 尝试立即注入；若容器未就绪，稍后重试几次
+  let attempts = 0;
+  const tryInject = () => {
+    attempts++;
+    if (ensureNativeRegexPanelInjected()) return;
+    if (attempts < 10) setTimeout(tryInject, 500);
+  };
+  tryInject();
 }
 
 // 主题相关功能
@@ -1720,8 +1682,8 @@ function toggleTransferToolTheme() {
       return;
     }
 
-    const isDark = isDarkTheme();
-    const newTheme = isDark ? 'Default' : 'Dark Lite';
+    const vars = CommonStyles.getVars();
+    const newTheme = vars.bgColor === '#1a1a1a' ? 'Default' : 'Dark Lite';
 
     // Use SillyTavern existing API to switch themes
     context.powerUserSettings.theme = newTheme;
@@ -1747,14 +1709,16 @@ function updateThemeButton() {
   const $ = getJQuery();
   const themeBtn = $('#theme-toggle-btn');
   if (themeBtn.length) {
-    const isDark = isDarkTheme();
+    const vars = CommonStyles.getVars();
+    const isDark = vars.bgColor === '#1a1a1a';
     themeBtn.html(isDark ? '☀️' : '🌙');
     themeBtn.attr('title', isDark ? '切换到浅色主题' : '切换到深色主题');
   }
 }
 
 function updateModalTheme() {
-  const $ = getJQuery();
+  // 简化：酒馆原生CSS类会自动跟随主题，无需手动处理
+  // 若主工具模态存在，继续沿用其原逻辑（保持兼容）
   const modal = $('#preset-transfer-modal');
   if (!modal.length) return;
 
@@ -1914,7 +1878,6 @@ function createTransferUI() {
                 <div class="modal-header">
                     <button id="theme-toggle-btn" class="theme-toggle-btn" title="切换主题">🌙</button>
                     <div>
-                        <span>🔄</span>
                         <h2>预设条目转移工具</h2>
                     </div>
                     <div class="font-size-control">
@@ -1923,7 +1886,7 @@ function createTransferUI() {
                         <span id="font-size-display">16px</span>
                     </div>
                     <div class="version-info">
-                        <span class="author">V1.8 by discord千秋梦</span>
+                        <span class="author">V1.9 by discord千秋梦</span>
                     </div>
                 </div>
                 <div class="preset-selection">
@@ -1938,7 +1901,7 @@ function createTransferUI() {
                                 ${apiInfo.presetNames.map(name => `<option value="${name}">${name}</option>`).join('')}
                             </select>
                             <button id="get-current-left" class="get-current-btn" title="获取当前预设">📥</button>
-                            <button id="regex-binding-left" class="regex-binding-btn" title="配置正则绑定">🔗</button>
+
                         </div>
                     </div>
                     <div class="preset-field">
@@ -1952,7 +1915,7 @@ function createTransferUI() {
                                 ${apiInfo.presetNames.map(name => `<option value="${name}">${name}</option>`).join('')}
                             </select>
                             <button id="get-current-right" class="get-current-btn" title="获取当前预设">📥</button>
-                            <button id="regex-binding-right" class="regex-binding-btn" title="配置正则绑定">🔗</button>
+
                         </div>
                     </div>
                 </div>
@@ -2361,32 +2324,24 @@ async function applyBatchModificationsToSide(side, selectedEntries, modification
 }
 
 function applyStyles(isMobile, isSmallScreen, isPortrait) {
-  const isDark = isDarkTheme();
-  const bgColor = isDark ? '#1a1a1a' : '#ffffff';
-  const textColor = isDark ? '#e0e0e0' : '#374151';
-  const borderColor = isDark ? '#374151' : '#e5e7eb';
-  const inputBg = isDark ? '#2d2d2d' : '#ffffff';
-  const inputBorder = isDark ? '#4b5563' : '#d1d5db';
-  const sectionBg = isDark ? '#262626' : '#f9fafb';
+  const vars = CommonStyles.getVars();
 
   const styles = `
         #preset-transfer-modal {
-            --pt-font-size: 16px;
-            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-            z-index: 10000; display: flex; align-items: ${isMobile ? 'flex-start' : 'center'};
-            justify-content: center; padding: ${isMobile ? '10px' : '20px'};
-            ${isMobile ? 'padding-top: 20px;' : ''}
-            overflow-y: auto; -webkit-overflow-scrolling: touch; animation: pt-fadeIn 0.3s ease-out;
+            --pt-font-size: ${vars.fontSize};
+            ${CommonStyles.getModalBaseStyles({ maxWidth: '1000px' })}
+            z-index: 10000; align-items: ${vars.isMobile ? 'flex-start' : 'center'};
+            ${vars.isMobile ? 'padding-top: 20px;' : ''}
+            overflow-y: auto; -webkit-overflow-scrolling: touch;
         }
         #preset-transfer-modal .transfer-modal-content {
-            background: ${bgColor}; border-radius: ${isMobile ? '16px' : '20px'};
-            padding: ${isSmallScreen ? '24px' : isMobile ? '28px' : '32px'};
-            max-width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '1000px'};
-            width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '90%'};
-            min-height: ${isMobile ? 'auto' : '400px'}; max-height: ${isMobile ? '90vh' : '85vh'};
-            overflow-y: auto; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            ${isMobile ? '-webkit-overflow-scrolling: touch;' : ''}
+            background: ${vars.bgColor}; border-radius: ${vars.isMobile ? vars.borderRadius : '20px'};
+            padding: ${vars.isSmallScreen ? vars.padding : vars.isMobile ? vars.paddingLarge : '32px'};
+            max-width: ${vars.isSmallScreen ? '95vw' : vars.isMobile ? '90vw' : '1000px'};
+            width: ${vars.isSmallScreen ? '95vw' : vars.isMobile ? '90vw' : '90%'};
+            min-height: ${vars.isMobile ? 'auto' : '400px'}; max-height: ${vars.isMobile ? '90vh' : '85vh'};
+            overflow-y: auto; color: ${vars.textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            ${vars.isMobile ? '-webkit-overflow-scrolling: touch;' : ''}
             animation: pt-slideUp 0.3s ease-out;
             transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
         }
@@ -2406,67 +2361,72 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         #preset-transfer-modal label,
         #preset-transfer-modal span,
         #preset-transfer-modal div {
-            font-size: var(--pt-font-size) !important;
+            font-size: var(--pt-font-size);
+        }
+
+        /* 全局占位符文本字体大小 - 统一处理所有模态框 */
+        input::placeholder,
+        textarea::placeholder,
+        input::-webkit-input-placeholder,
+        textarea::-webkit-input-placeholder,
+        input::-moz-placeholder,
+        textarea::-moz-placeholder {
+            font-size: inherit !important;
+        }
+
+        /* 全局下拉框选项字体大小 */
+        select option {
+            font-size: calc(var(--pt-font-size) * 0.875) !important;
         }
         #preset-transfer-modal .modal-header {
             text-align: center; margin-bottom: ${isMobile ? '24px' : '28px'};
-            padding-bottom: ${isMobile ? '18px' : '22px'}; border-bottom: 1px solid ${borderColor}; position: relative;
+            padding-bottom: ${isMobile ? '18px' : '22px'}; border-bottom: 1px solid ${
+    vars.borderColor
+  }; position: relative;
         }
         #preset-transfer-modal .theme-toggle-btn {
             position: absolute; left: 0;
             top: 0; /* 主题按钮移到最上方 */
-            background: rgba(${isDark ? '255,255,255' : '0,0,0'}, 0.1); border: none;
+            background: rgba(0,0,0, 0.1); border: none;
             border-radius: 50%; width: ${isMobile ? '32px' : '36px'}; height: ${isMobile ? '32px' : '36px'};
-            font-size: ${isMobile ? '14px' : '16px'}; cursor: pointer;
+            font-size: ${isMobile ? 'calc(var(--pt-font-size) * 0.875)' : 'var(--pt-font-size)'}; cursor: pointer;
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); display: flex; align-items: center; justify-content: center;
             backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
         #preset-transfer-modal .theme-toggle-btn:hover {
-            background: rgba(${isDark ? '255,255,255' : '0,0,0'}, 0.2);
+            background: rgba(0,0,0, 0.2);
             transform: scale(1.05);
         }
         #preset-transfer-modal .theme-toggle-btn:active {
             transform: scale(0.98);
         }
         #preset-transfer-modal .font-size-control {
-            position: absolute; left: 0;
-            top: ${isMobile ? '45px' : '42px'}; /* 字体控制器移到主题按钮下方 */
-            display: flex; align-items: center; gap: ${isMobile ? '6px' : '8px'};
-            background: rgba(${isDark ? '255,255,255' : '0,0,0'}, 0.1);
-            border-radius: ${isMobile ? '16px' : '20px'};
-            padding: ${isMobile ? '4px 8px' : '6px 12px'};
-            backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            transform: ${isMobile ? 'scale(0.85)' : 'scale(1)'};
-            transform-origin: left top;
-            height: ${isMobile ? '24px' : '32px'};
+            position: ${isMobile ? 'static' : 'absolute'};
+            ${isMobile ? '' : 'left: 0;'}
+            ${isMobile ? '' : 'top: 42px;'}
+            display: flex; align-items: center; gap: ${isMobile ? '8px' : '8px'};
+            ${isMobile ? 'background: transparent;' : 'background: rgba(0,0,0, 0.1);'}
+            border-radius: ${isMobile ? '0' : '20px'};
+            ${isMobile ? 'padding: 0; margin-top: 8px;' : 'padding: 6px 12px;'}
+            ${
+              isMobile
+                ? ''
+                : 'backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); box-shadow: 0 2px 8px rgba(0,0,0,0.1);'
+            }
+            ${isMobile ? 'transform: none; height: auto;' : 'transform: scale(1); height: 32px;'}
+            width: ${isMobile ? '100%' : 'auto'};
+            justify-content: ${isMobile ? 'center' : 'flex-start'};
         }
         #preset-transfer-modal .font-size-control label {
-            font-size: ${isMobile ? '14px' : '16px'}; cursor: pointer; margin: 0;
-        }
-        #preset-transfer-modal #font-size-slider {
-            width: ${isMobile ? '60px' : '80px'}; height: ${isMobile ? '24px' : '32px'};
-            background: rgba(${isDark ? '255,255,255' : '0,0,0'}, 0.2);
-            border-radius: 2px; outline: none; cursor: pointer;
-            -webkit-appearance: none; appearance: none;
-            /* 移除padding，直接让滑块本身占满整个高度 */
-        }
-        #preset-transfer-modal #font-size-slider::-webkit-slider-thumb {
-            -webkit-appearance: none; appearance: none;
-            width: ${isMobile ? '14px' : '16px'}; height: ${isMobile ? '14px' : '16px'};
-            background: ${isDark ? '#60a5fa' : '#3b82f6'};
-            border-radius: 50%; cursor: pointer;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-        }
-        #preset-transfer-modal #font-size-slider::-moz-range-thumb {
-            width: ${isMobile ? '14px' : '16px'}; height: ${isMobile ? '14px' : '16px'};
-            background: ${isDark ? '#60a5fa' : '#3b82f6'};
-            border-radius: 50%; cursor: pointer; border: none;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 0.875)' : 'var(--pt-font-size)'
+            }; cursor: pointer; margin: 0;
         }
         #preset-transfer-modal #font-size-display {
-            font-size: ${isMobile ? '10px' : '12px'}; font-weight: 600; color: ${textColor};
+            font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 0.625)' : 'calc(var(--pt-font-size) * 0.75)'
+            }; font-weight: 600; color: ${vars.textColor};
             min-width: ${isMobile ? '28px' : '32px'}; text-align: center;
         }
         #preset-transfer-modal .modal-header > div:first-of-type {
@@ -2474,20 +2434,36 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             gap: 12px; padding: ${isMobile ? '8px 0' : '12px 0'};
         }
         #preset-transfer-modal .modal-header span:first-child { font-size: ${
-          isSmallScreen ? '28px' : isMobile ? '32px' : '36px'
+          isSmallScreen
+            ? 'calc(var(--pt-font-size) * 1.75)'
+            : isMobile
+            ? 'calc(var(--pt-font-size) * 2)'
+            : 'calc(var(--pt-font-size) * 2.25)'
         }; }
         #preset-transfer-modal .modal-header h2 {
-            margin: 0; font-size: ${isSmallScreen ? '22px' : isMobile ? '24px' : '28px'};
-            font-weight: 700; color: ${isDark ? '#f3f4f6' : '#111827'}; letter-spacing: -0.5px;
+            margin: 0; font-size: ${
+              isSmallScreen
+                ? 'calc(var(--pt-font-size) * 1.375)'
+                : isMobile
+                ? 'calc(var(--pt-font-size) * 1.5)'
+                : 'calc(var(--pt-font-size) * 1.75)'
+            };
+            font-weight: 700; color: ${vars.textColor}; letter-spacing: -0.5px;
         }
         #preset-transfer-modal .version-info {
             margin-top: 8px; text-align: center;
-            color: ${isDark ? '#9ca3af' : '#6b7280'}; opacity: 0.8; display: flex;
+            color: ${vars.tipColor}; opacity: 0.8; display: flex;
             align-items: center; justify-content: center; gap: 8px;
         }
         #preset-transfer-modal .version-info .author {
-            font-weight: 500; color: ${isDark ? '#9ca3af' : '#6b7280'};
-            font-size: ${isSmallScreen ? '10px' : isMobile ? '11px' : '13px'} !important;
+            font-weight: 500; color: ${vars.tipColor};
+            font-size: ${
+              isSmallScreen
+                ? 'calc(var(--pt-font-size) * 0.625)'
+                : isMobile
+                ? 'calc(var(--pt-font-size) * 0.6875)'
+                : 'calc(var(--pt-font-size) * 0.8125)'
+            };
         }
         #preset-transfer-modal .preset-selection {
             display: ${isMobile ? 'flex' : 'grid'};
@@ -2495,8 +2471,8 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             gap: ${isMobile ? '18px' : '22px'}; margin-bottom: ${isMobile ? '24px' : '28px'};
         }
         #preset-transfer-modal .preset-field {
-            padding: ${isMobile ? '20px' : '24px'}; background: ${sectionBg};
-            border-radius: 12px; border: 1px solid ${borderColor}; transition: all 0.3s ease;
+            padding: ${isMobile ? '20px' : '24px'}; background: ${vars.sectionBg};
+            border-radius: 12px; border: 1px solid ${vars.borderColor}; transition: all 0.3s ease;
         }
         #preset-transfer-modal .preset-input-group {
             display: flex; gap: 8px; align-items: center;
@@ -2505,60 +2481,48 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             flex: 1;
         }
         #preset-transfer-modal .get-current-btn {
-            padding: ${isMobile ? '10px 12px' : '12px 14px'}; background: ${isDark ? '#4b5563' : '#6b7280'};
+            padding: ${isMobile ? '10px 12px' : '12px 14px'}; background: #6b7280;
             border: none; color: #ffffff; border-radius: 8px; cursor: pointer;
-            font-size: ${isMobile ? '14px' : '14px'}; font-weight: 600;
+            font-size: calc(var(--pt-font-size) * 0.875); font-weight: 600;
             transition: all 0.3s ease; min-width: ${isMobile ? '40px' : '45px'};
             display: flex; align-items: center; justify-content: center;
             transform: translateZ(0); will-change: background-color, transform;
         }
-        #preset-transfer-modal .regex-binding-btn {
-            padding: ${isMobile ? '10px 12px' : '12px 14px'}; background: ${isDark ? '#7c3aed' : '#8b5cf6'};
-            border: none; color: #ffffff; border-radius: 8px; cursor: pointer;
-            font-size: ${isMobile ? '14px' : '14px'}; font-weight: 600;
-            transition: all 0.3s ease; min-width: ${isMobile ? '40px' : '45px'};
-            display: flex; align-items: center; justify-content: center;
-            transform: translateZ(0); will-change: background-color, transform;
-        }
+
         #preset-transfer-modal .get-current-btn:hover {
-            background: ${isDark ? '#6b7280' : '#4b5563'}; transform: scale(1.05);
+            background: #4b5563; transform: scale(1.05);
         }
         #preset-transfer-modal .get-current-btn:active {
             transform: scale(0.98);
         }
-        #preset-transfer-modal .regex-binding-btn:hover {
-            background: ${isDark ? '#8b5cf6' : '#7c3aed'}; transform: scale(1.05);
-        }
-        #preset-transfer-modal .regex-binding-btn:active {
-            transform: scale(0.98);
-        }
-        #preset-transfer-modal .regex-binding-btn.has-bindings {
-            background: ${isDark ? '#059669' : '#10b981'};
-            box-shadow: 0 0 0 2px ${isDark ? '#10b981' : '#059669'}40;
-        }
+
+
+
         #preset-transfer-modal .preset-field label {
             display: flex; flex-direction: column; justify-content: flex-start;
-            margin-bottom: 14px; font-weight: 600; font-size: ${isMobile ? '16px' : '15px'};
-            color: ${textColor}; min-height: 50px;
+            margin-bottom: 14px; font-weight: 600; font-size: ${
+              isMobile ? 'var(--pt-font-size)' : 'calc(var(--pt-font-size) * 0.9375)'
+            };
+            color: ${vars.textColor}; min-height: 50px;
         }
         #preset-transfer-modal .preset-field label span:first-child { display: flex; align-items: center; gap: 10px; }
         #preset-transfer-modal .preset-field label span:first-child span {
             display: inline-flex; align-items: center; justify-content: center;
-            width: 24px; height: 24px; background: ${inputBg}; border: 1px solid ${borderColor};
-            border-radius: 6px; color: ${textColor}; font-size: 12px;
+            width: 24px; height: 24px; background: ${vars.inputBg}; border: 1px solid ${vars.borderColor};
+            border-radius: 6px; color: ${vars.textColor}; font-size: ${vars.fontSizeSmall};
         }
         #preset-transfer-modal .preset-field label span:last-child {
-            color: ${isDark ? '#9ca3af' : '#6b7280'}; font-weight: 400; font-size: ${
-    isMobile ? '13px' : '12px'
+            color: ${vars.tipColor}; font-weight: 400; font-size: ${
+    isMobile ? 'calc(var(--pt-font-size) * 0.8125)' : 'calc(var(--pt-font-size) * 0.75)'
   }; margin-top: 4px;
         }
         #preset-transfer-modal select {
             width: 100%; padding: ${isMobile ? '14px 16px' : '12px 14px'};
-            background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder};
-            border-radius: 8px; font-size: ${isMobile ? '15px' : '14px'}; font-weight: 500;
-            appearance: none; background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 5"><path fill="${
-              isDark ? '%23e0e0e0' : '%236b7280'
-            }" d="M2 0L0 2h4zm0 5L0 3h4z"/></svg>');
+            background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder};
+            border-radius: 8px; font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 0.9375)' : 'calc(var(--pt-font-size) * 0.875)'
+            }; font-weight: 500;
+            appearance: none; background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 5"><path fill="%236b7280" d="M2 0L0 2h4zm0 5L0 3h4z"/></svg>');
             background-repeat: no-repeat; background-position: right 16px center;
             background-size: 12px; padding-right: 45px; box-sizing: border-box;
             transition: border-color 0.2s ease, box-shadow 0.2s ease; cursor: pointer;
@@ -2566,12 +2530,12 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             will-change: border-color, box-shadow; /* 优化动画性能 */
         }
         #preset-transfer-modal select:focus {
-            border-color: ${isDark ? '#60a5fa' : '#6b7280'} !important;
-            box-shadow: 0 0 0 3px rgba(${isDark ? '96, 165, 250' : '107, 114, 128'}, 0.1) !important;
+            border-color: #6b7280 !important;
+            box-shadow: 0 0 0 3px rgba(107, 114, 128, 0.1) !important;
             outline: none !important;
         }
         #preset-transfer-modal select:hover {
-            border-color: ${isDark ? '#4b5563' : '#9ca3af'};
+            border-color: #9ca3af;
         }
         #preset-transfer-modal .action-section {
             display: flex; flex-wrap: wrap; align-items: center;
@@ -2579,9 +2543,11 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             ${isMobile ? 'justify-content: center; flex-direction: column;' : 'justify-content: flex-start;'}
         }
         #preset-transfer-modal #load-entries {
-            padding: ${isMobile ? '18px 32px' : '14px 26px'}; background: ${isDark ? '#4b5563' : '#374151'};
+            padding: ${isMobile ? '18px 32px' : '14px 26px'}; background: #374151;
             border: none; color: #ffffff; border-radius: 10px; cursor: pointer;
-            font-size: ${isMobile ? '17px' : '15px'}; font-weight: 600;
+            font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 1.0625)' : 'calc(var(--pt-font-size) * 0.9375)'
+            }; font-weight: 600;
             ${isMobile ? 'width: 100%; max-width: 300px;' : 'min-width: 150px;'}
             transition: background-color 0.2s ease, opacity 0.2s ease; text-transform: uppercase; letter-spacing: 0.5px;
             ${isMobile ? 'margin-bottom: 10px;' : ''}
@@ -2589,7 +2555,7 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             will-change: background-color, opacity; /* 优化动画性能 */
         }
         #preset-transfer-modal #load-entries:hover {
-            background: ${isDark ? '#6b7280' : '#4b5563'};
+            background: #4b5563;
         }
         #preset-transfer-modal #load-entries:active {
             opacity: 0.8;
@@ -2597,7 +2563,9 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         #preset-transfer-modal #batch-delete-presets {
             padding: ${isMobile ? '18px 32px' : '14px 26px'}; background: #dc2626;
             border: none; color: #ffffff; border-radius: 10px; cursor: pointer;
-            font-size: ${isMobile ? '17px' : '15px'}; font-weight: 600;
+            font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 1.0625)' : 'calc(var(--pt-font-size) * 0.9375)'
+            }; font-weight: 600;
             ${isMobile ? 'width: 100%; max-width: 300px;' : 'min-width: 150px;'}
             transition: background-color 0.2s ease, opacity 0.2s ease; text-transform: uppercase; letter-spacing: 0.5px;
             ${isMobile ? 'margin-bottom: 10px;' : ''}
@@ -2611,30 +2579,34 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             opacity: 0.8;
         }
         #preset-transfer-modal .auto-switch-label {
-            display: flex; align-items: center; gap: ${isMobile ? '16px' : '12px'}; color: ${textColor};
-            font-size: ${isMobile ? '16px' : '14px'}; font-weight: 500;
+            display: flex; align-items: center; gap: ${isMobile ? '16px' : '12px'}; color: ${vars.textColor};
+            font-size: ${isMobile ? 'var(--pt-font-size)' : 'calc(var(--pt-font-size) * 0.875)'}; font-weight: 500;
             cursor: pointer; user-select: none; ${
               isMobile
-                ? `justify-content: flex-start; padding: 12px 16px; background: ${sectionBg}; border-radius: 12px; width: 100%; max-width: 300px; border: 1px solid ${borderColor};`
+                ? `justify-content: flex-start; padding: 12px 16px; background: ${vars.sectionBg}; border-radius: 12px; width: 100%; max-width: 300px; border: 1px solid ${vars.borderColor};`
                 : ''
             }
         }
         #preset-transfer-modal .auto-switch-label input {
             ${isMobile ? 'transform: scale(1.4);' : 'transform: scale(1.2);'}
-            accent-color: ${isDark ? '#60a5fa' : '#374151'}; cursor: pointer;
+            accent-color: #374151; cursor: pointer;
         }
         #preset-transfer-modal #entries-container { width: 100%; }
         #preset-transfer-modal .entries-header {
             margin-bottom: ${isMobile ? '20px' : '25px'}; padding: ${isMobile ? '18px' : '22px'};
-            background: ${sectionBg}; border-radius: 12px; border: 1px solid ${borderColor};
+            background: ${vars.sectionBg}; border-radius: 12px; border: 1px solid ${vars.borderColor};
         }
         #preset-transfer-modal .entries-header h4 {
-            color: ${textColor}; margin: 0 0 16px 0; font-size: ${isMobile ? '18px' : '17px'};
+            color: ${vars.textColor}; margin: 0 0 16px 0; font-size: ${
+    isMobile ? 'calc(var(--pt-font-size) * 1.125)' : 'calc(var(--pt-font-size) * 1.0625)'
+  };
             font-weight: 700; letter-spacing: -0.3px;
         }
         #preset-transfer-modal .entries-header p {
-            margin: 0 0 14px 0; font-size: ${isMobile ? '14px' : '13px'};
-            color: ${isDark ? '#9ca3af' : '#6b7280'}; line-height: 1.5;
+            margin: 0 0 14px 0; font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 0.875)' : 'calc(var(--pt-font-size) * 0.8125)'
+            };
+            color: ${vars.tipColor}; line-height: 1.5;
         }
         #preset-transfer-modal .search-section { margin-bottom: 16px; }
         #preset-transfer-modal .left-search-section {
@@ -2648,35 +2620,41 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         #preset-transfer-modal #left-entry-search-inline,
         #preset-transfer-modal #right-entry-search-inline {
             width: 100%; padding: ${isMobile ? '14px 18px' : '12px 16px'};
-            background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder};
-            border-radius: 8px; font-size: ${isMobile ? '15px' : '14px'}; font-weight: 400;
+            background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder};
+            border-radius: 8px; font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 0.9375)' : 'calc(var(--pt-font-size) * 0.875)'
+            }; font-weight: 400;
             transition: all 0.3s ease; box-sizing: border-box;
         }
         #preset-transfer-modal #left-entry-search:focus,
         #preset-transfer-modal #left-entry-search-inline:focus,
         #preset-transfer-modal #right-entry-search-inline:focus {
-            border-color: ${isDark ? '#60a5fa' : '#6b7280'} !important;
-            box-shadow: 0 0 0 3px rgba(${isDark ? '96, 165, 250' : '107, 114, 128'}, 0.1) !important;
+            border-color: #6b7280 !important;
+            box-shadow: 0 0 0 3px rgba(107, 114, 128, 0.1) !important;
             outline: none !important;
         }
         #preset-transfer-modal .display-option-label {
-            display: flex; align-items: center; gap: 6px; color: ${textColor};
-            font-size: ${isMobile ? '12px' : '11px'}; font-weight: 500;
+            display: flex; align-items: center; gap: 6px; color: ${vars.textColor};
+            font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 0.75)' : 'calc(var(--pt-font-size) * 0.6875)'
+            }; font-weight: 500;
             cursor: pointer; user-select: none; margin-left: ${isMobile ? '0px' : '6px'};
         }
         #preset-transfer-modal .display-option-label input {
             ${isMobile ? 'transform: scale(1.1);' : 'transform: scale(1.0);'}
-            accent-color: ${isDark ? '#60a5fa' : '#374151'}; cursor: pointer;
+            accent-color: #374151; cursor: pointer;
         }
         #preset-transfer-modal #entry-search {
             width: 100%; padding: ${isMobile ? '14px 18px' : '12px 16px'};
-            background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder};
-            border-radius: 8px; font-size: ${isMobile ? '15px' : '14px'}; font-weight: 400;
+            background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder};
+            border-radius: 8px; font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 0.9375)' : 'calc(var(--pt-font-size) * 0.875)'
+            }; font-weight: 400;
             transition: all 0.3s ease; box-sizing: border-box;
         }
         #preset-transfer-modal #entry-search:focus {
-            border-color: ${isDark ? '#60a5fa' : '#6b7280'} !important;
-            box-shadow: 0 0 0 3px rgba(${isDark ? '96, 165, 250' : '107, 114, 128'}, 0.1) !important;
+            border-color: #6b7280 !important;
+            box-shadow: 0 0 0 3px rgba(107, 114, 128, 0.1) !important;
             outline: none !important;
         }
         #preset-transfer-modal .selection-controls {
@@ -2686,7 +2664,9 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         }
         #preset-transfer-modal .selection-btn {
             padding: ${isMobile ? '12px 18px' : '10px 16px'}; border: none; color: #ffffff;
-            border-radius: 6px; cursor: pointer; font-size: ${isMobile ? '14px' : '13px'};
+            border-radius: 6px; cursor: pointer; font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 0.875)' : 'calc(var(--pt-font-size) * 0.8125)'
+            };
             font-weight: 600; transition: background-color 0.2s ease, opacity 0.2s ease; display: flex; align-items: center;
             justify-content: center; gap: 6px;
             transform: translateZ(0); /* 启用硬件加速 */
@@ -2699,7 +2679,7 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             opacity: 0.8;
         }
         #preset-transfer-modal .selection-btn .btn-icon {
-            font-size: ${isMobile ? '16px' : '14px'}; font-weight: bold;
+            font-size: ${isMobile ? 'var(--pt-font-size)' : 'calc(var(--pt-font-size) * 0.875)'}; font-weight: bold;
             display: inline-flex; align-items: center; justify-content: center;
             width: ${isMobile ? '20px' : '18px'}; height: ${isMobile ? '20px' : '18px'};
             background: rgba(255,255,255,0.2); border-radius: 50%;
@@ -2716,7 +2696,9 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
                 ? 'grid-column: 1 / -1; text-align: center; margin-top: 10px;'
                 : 'margin-left: auto;'
             }
-            color: #374151; font-size: ${isMobile ? '14px' : '13px'}; font-weight: 600;
+            color: #374151; font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 0.875)' : 'calc(var(--pt-font-size) * 0.8125)'
+            }; font-weight: 600;
             padding: 8px 14px; background: #f3f4f6; border-radius: 6px;
         }
         #preset-transfer-modal .dual-entries-container {
@@ -2730,7 +2712,7 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             position: relative;
         }
         #preset-transfer-modal .single-side {
-            border: 1px solid ${borderColor}; border-radius: 12px; background: ${sectionBg};
+            border: 1px solid ${vars.borderColor}; border-radius: 12px; background: ${vars.sectionBg};
             padding: ${isMobile ? '16px' : '18px'};
         }
         /* 单预设模式下隐藏双预设容器 */
@@ -2738,17 +2720,19 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             display: none !important;
         }
         #preset-transfer-modal .entries-side {
-            border: 1px solid ${borderColor}; border-radius: 12px; background: ${sectionBg};
+            border: 1px solid ${vars.borderColor}; border-radius: 12px; background: ${vars.sectionBg};
             padding: ${isMobile ? '16px' : '18px'};
             display: flex; flex-direction: column; /* 使用flex布局确保内容对齐 */
         }
         #preset-transfer-modal .side-header {
             margin-bottom: ${isMobile ? '14px' : '16px'}; padding-bottom: ${isMobile ? '12px' : '14px'};
-            border-bottom: 1px solid ${borderColor};
+            border-bottom: 1px solid ${vars.borderColor};
         }
         #preset-transfer-modal .side-header h5 {
-            margin: 0 0 ${isMobile ? '10px' : '12px'} 0; font-size: ${isMobile ? '16px' : '15px'};
-            font-weight: 700; color: ${textColor};
+            margin: 0 0 ${isMobile ? '10px' : '12px'} 0; font-size: ${
+    isMobile ? 'var(--pt-font-size)' : 'calc(var(--pt-font-size) * 0.9375)'
+  };
+            font-weight: 700; color: ${vars.textColor};
         }
         #preset-transfer-modal .side-controls {
             display: flex; flex-direction: column; gap: ${isMobile ? '6px' : '10px'};
@@ -2764,11 +2748,11 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         }
         #preset-transfer-modal .display-mode-select {
             width: 100%; padding: ${isMobile ? '8px 10px' : '6px 8px'};
-            background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder};
-            border-radius: 6px; font-size: ${isMobile ? '12px' : '11px'}; font-weight: 500;
-            appearance: none; background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 5"><path fill="${
-              isDark ? '%23e0e0e0' : '%236b7280'
-            }" d="M2 0L0 2h4zm0 5L0 3h4z"/></svg>');
+            background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder};
+            border-radius: 6px; font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 0.75)' : 'calc(var(--pt-font-size) * 0.6875)'
+            }; font-weight: 500;
+            appearance: none; background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 5"><path fill="%236b7280" d="M2 0L0 2h4zm0 5L0 3h4z"/></svg>');
             background-repeat: no-repeat; background-position: right 12px center;
             background-size: 10px; padding-right: 32px; box-sizing: border-box;
             transition: border-color 0.2s ease, box-shadow 0.2s ease; cursor: pointer;
@@ -2776,12 +2760,12 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             will-change: border-color, box-shadow; /* 优化动画性能 */
         }
         #preset-transfer-modal .display-mode-select:focus {
-            border-color: ${isDark ? '#60a5fa' : '#6b7280'} !important;
-            box-shadow: 0 0 0 2px rgba(${isDark ? '96, 165, 250' : '107, 114, 128'}, 0.1) !important;
+            border-color: #6b7280 !important;
+            box-shadow: 0 0 0 2px rgba(107, 114, 128, 0.1) !important;
             outline: none !important;
         }
         #preset-transfer-modal .display-mode-select:hover {
-            border-color: ${isDark ? '#4b5563' : '#9ca3af'};
+            border-color: #9ca3af;
         }
         /* 防止下拉框点击时的布局抖动 */
         #preset-transfer-modal .display-options,
@@ -2794,15 +2778,17 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             -webkit-backface-visibility: hidden;
         }
         #preset-transfer-modal .selection-count {
-            font-size: ${isMobile ? '13px' : '12px'}; color: ${isDark ? '#9ca3af' : '#6b7280'}; font-weight: 500;
+            font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 0.8125)' : 'calc(var(--pt-font-size) * 0.75)'
+            }; color: ${vars.tipColor}; font-weight: 500;
         }
         #preset-transfer-modal .entries-list {
             min-height: ${isSmallScreen ? '240px' : isMobile ? '320px' : '300px'};
             max-height: ${isSmallScreen ? '380px' : isMobile ? '480px' : '450px'};
-            overflow-y: auto; border: 1px solid ${borderColor}; border-radius: 10px;
-            background: ${inputBg}; padding: ${isMobile ? '12px' : '12px'};
+            overflow-y: auto; border: 1px solid ${vars.borderColor}; border-radius: 10px;
+            background: ${vars.inputBg}; padding: ${isMobile ? '12px' : '12px'};
             -webkit-overflow-scrolling: touch; scrollbar-width: thin;
-            scrollbar-color: ${isDark ? '#4b5563 transparent' : '#d1d5db transparent'};
+            scrollbar-color: #d1d5db transparent;
             flex: 1; /* 让entries-list自动填充剩余空间 */
         }
         #preset-transfer-modal .side-actions {
@@ -2811,7 +2797,7 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         }
         #preset-transfer-modal .side-actions button {
             padding: ${isMobile ? '10px 14px' : '8px 12px'}; border: none; color: #ffffff;
-            border-radius: 8px; cursor: pointer; font-size: ${isMobile ? '12px' : '12px'};
+            border-radius: 8px; cursor: pointer; font-size: calc(var(--pt-font-size) * 0.75);
             font-weight: 700; transition: all 0.2s ease;
             ${isMobile ? 'min-width: 70px;' : 'min-width: 65px;'}
             text-shadow: 0 1px 2px rgba(0,0,0,0.3);
@@ -2835,18 +2821,18 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         #preset-transfer-modal .side-actions button[id$="-move"] { background: #8b5cf6; }
         #preset-transfer-modal .side-actions button[id^="transfer-"] { background: #2563eb; }
         #preset-transfer-modal .side-controls .selection-btn {
-            background: ${isDark ? '#4b5563' : '#6b7280'}; padding: ${isMobile ? '6px 8px' : '4px 8px'};
-            font-size: ${isMobile ? '10px' : '10px'}; border-radius: 6px;
+            background: #6b7280; padding: ${isMobile ? '6px 8px' : '4px 8px'};
+            font-size: calc(var(--pt-font-size) * 0.625); border-radius: 6px;
             ${isMobile ? 'min-width: 50px;' : ''} border: none; color: #ffffff;
             transition: background-color 0.2s ease; cursor: pointer;
             transform: translateZ(0); /* 启用硬件加速 */
             will-change: background-color; /* 优化动画性能 */
         }
         #preset-transfer-modal .side-controls .selection-btn:hover {
-            background: ${isDark ? '#6b7280' : '#4b5563'};
+            background: #4b5563;
         }
         #preset-transfer-modal .side-controls .selection-btn:active {
-            background: ${isDark ? '#374151' : '#374151'};
+            background: #374151;
         }
         #preset-transfer-modal .entries-side.transfer-target {
             border-color: #3b82f6; background: #eff6ff;
@@ -2861,7 +2847,7 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         /* 搜索跳转按钮样式 */
         #preset-transfer-modal .jump-btn {
             position: absolute; right: ${isMobile ? '12px' : '8px'}; top: 50%;
-            transform: translateY(-50%); background: ${isDark ? '#3b82f6' : '#2563eb'};
+            transform: translateY(-50%); background: #2563eb;
             border: none; border-radius: 50%; width: ${isMobile ? '32px' : '28px'};
             height: ${isMobile ? '32px' : '28px'}; cursor: pointer;
             display: flex; align-items: center; justify-content: center;
@@ -2869,18 +2855,20 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         #preset-transfer-modal .jump-btn:hover {
-            background: ${isDark ? '#2563eb' : '#1d4ed8'};
+            background: #1d4ed8;
             box-shadow: 0 4px 8px rgba(0,0,0,0.15);
         }
         #preset-transfer-modal .jump-btn .jump-icon {
-            color: #ffffff; font-size: ${isMobile ? '16px' : '14px'}; font-weight: bold;
+            color: #ffffff; font-size: ${
+              isMobile ? 'var(--pt-font-size)' : 'calc(var(--pt-font-size) * 0.875)'
+            }; font-weight: bold;
             line-height: 1; transform: rotate(-45deg);
         }
 
         /* 跳转高亮效果 */
         #preset-transfer-modal .entry-item.jump-highlight {
-            background: ${isDark ? 'rgba(59, 130, 246, 0.2)' : 'rgba(37, 99, 235, 0.1)'} !important;
-            border-color: ${isDark ? '#3b82f6' : '#2563eb'} !important;
+            background: rgba(37, 99, 235, 0.1) !important;
+            border-color: #2563eb !important;
             box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3) !important;
             animation: pt-jumpPulse 2s ease-in-out;
         }
@@ -2896,25 +2884,29 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         }
         #preset-transfer-modal #insert-position-section label {
             display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
-            font-weight: 600; font-size: ${isMobile ? '16px' : '15px'}; color: #374151;
+            font-weight: 600; font-size: ${
+              isMobile ? 'var(--pt-font-size)' : 'calc(var(--pt-font-size) * 0.9375)'
+            }; color: #374151;
         }
         #preset-transfer-modal #insert-position-section label span {
             display: inline-flex; align-items: center; justify-content: center;
             width: 26px; height: 26px; background: #ffffff; border: 1px solid #e5e7eb;
-            border-radius: 6px; color: #374151; font-size: 14px;
+            border-radius: 6px; color: #374151; font-size: calc(var(--pt-font-size) * 0.875);
         }
         #preset-transfer-modal #insert-position-section p {
-            margin: 0 0 16px 0; font-size: ${isMobile ? '14px' : '13px'};
+            margin: 0 0 16px 0; font-size: ${
+              isMobile ? 'calc(var(--pt-font-size) * 0.875)' : 'calc(var(--pt-font-size) * 0.8125)'
+            };
             color: #6b7280; line-height: 1.5;
         }
         #preset-transfer-modal .modal-actions {
             display: flex; justify-content: center; flex-wrap: wrap;
             gap: ${isMobile ? '10px' : '14px'}; margin-top: ${isMobile ? '20px' : '25px'};
-            padding: ${isMobile ? '20px 0' : '24px 0'}; border-top: 1px solid ${borderColor};
+            padding: ${isMobile ? '20px 0' : '24px 0'}; border-top: 1px solid ${vars.borderColor};
         }
         #preset-transfer-modal .modal-actions button {
             padding: ${isMobile ? '14px 20px' : '12px 20px'}; border: none; color: #ffffff;
-            border-radius: 8px; cursor: pointer; font-size: ${isMobile ? '14px' : '14px'};
+            border-radius: 8px; cursor: pointer; font-size: calc(var(--pt-font-size) * 0.875);
             font-weight: 600; transition: background-color 0.2s ease, opacity 0.2s ease; letter-spacing: 0.3px;
             transform: translateZ(0); /* 启用硬件加速 */
             will-change: background-color, opacity; /* 优化动画性能 */
@@ -2925,16 +2917,10 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
         #preset-transfer-modal .modal-actions button:active {
             opacity: 0.8;
         }
-        #preset-transfer-modal #execute-transfer { background: ${isDark ? '#4b5563' : '#374151'}; ${
-    isMobile ? '' : 'min-width: 130px;'
-  } }
-        #preset-transfer-modal #execute-delete { background: ${isDark ? '#6b7280' : '#6b7280'}; ${
-    isMobile ? '' : 'min-width: 130px;'
-  } }
+        #preset-transfer-modal #execute-transfer { background: #374151; ${isMobile ? '' : 'min-width: 130px;'} }
+        #preset-transfer-modal #execute-delete { background: #6b7280; ${isMobile ? '' : 'min-width: 130px;'} }
         #preset-transfer-modal #edit-entry { background: #059669; ${isMobile ? '' : 'min-width: 130px;'} }
-        #preset-transfer-modal #close-modal { background: ${isDark ? '#6b7280' : '#9ca3af'}; ${
-    isMobile ? '' : 'min-width: 90px;'
-  } }
+        #preset-transfer-modal #close-modal { background: #9ca3af; ${isMobile ? '' : 'min-width: 90px;'} }
     `;
   if (!$('#preset-transfer-styles').length) {
     $('head').append(`<style id="preset-transfer-styles">${styles}</style>`);
@@ -2944,16 +2930,19 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
   const modal = $('#preset-transfer-modal');
   if (modal.length) {
     modal[0].style.cssText = `
-       --pt-scrollbar-track-color: ${isDark ? '#2d2d2d' : '#f3f4f6'};
-       --pt-scrollbar-thumb-color: ${isDark ? '#4b5563' : '#d1d5db'};
-       --pt-scrollbar-thumb-hover-color: ${isDark ? '#6b7280' : '#9ca3af'};
-       --pt-entry-hover-border: ${isDark ? '#60a5fa' : '#9ca3af'};
-       --pt-entry-hover-shadow: ${isDark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.1)'};
-       --pt-entry-active-shadow: ${isDark ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.05)'};
-       --pt-input-focus-border: ${isDark ? '#60a5fa' : '#6b7280'};
-       --pt-input-focus-shadow: ${isDark ? 'rgba(96, 165, 250, 0.1)' : 'rgba(107, 114, 128, 0.1)'};
+       --pt-scrollbar-track-color: #f3f4f6;
+       --pt-scrollbar-thumb-color: #d1d5db;
+       --pt-scrollbar-thumb-hover-color: #9ca3af;
+       --pt-entry-hover-border: #9ca3af;
+       --pt-entry-hover-shadow: rgba(0,0,0,0.1);
+       --pt-entry-active-shadow: rgba(0,0,0,0.05);
+       --pt-input-focus-border: #6b7280;
+       --pt-input-focus-shadow: rgba(107, 114, 128, 0.1);
    `;
   }
+
+  // 重新注入正则面板样式（修复主题切换后折叠功能失效的问题）
+  ensureNativeRegexPanelInjected();
 }
 
 function bindTransferEvents(apiInfo, modal) {
@@ -3010,11 +2999,13 @@ function bindTransferEvents(apiInfo, modal) {
     setTimeout(() => updateModalTheme(), 150);
   });
 
-  // 字体大小调节
-  $('#font-size-slider').on('input', function () {
-    const size = parseInt($(this).val());
+  // 字体大小调节 (添加防抖优化)
+  const debouncedFontSizeAdjust = debounce(function () {
+    const size = parseInt($('#font-size-slider').val());
     adjustFontSize(size);
-  });
+  }, 100); // 字体调节使用更短的防抖时间，保持响应性
+
+  $('#font-size-slider').on('input', debouncedFontSizeAdjust);
 
   // 获取当前预设按钮事件
   $('#get-current-left').on('click', function (e) {
@@ -3027,29 +3018,6 @@ function bindTransferEvents(apiInfo, modal) {
     e.preventDefault();
     e.stopPropagation();
     setCurrentPreset('right');
-  });
-
-  // 正则绑定按钮事件
-  $('#regex-binding-left').on('click', function (e) {
-    e.preventDefault();
-    e.stopPropagation();
-    const presetName = $('#left-preset').val();
-    if (presetName) {
-      createRegexBindingModal(presetName);
-    } else {
-      alert('请先选择左侧预设');
-    }
-  });
-
-  $('#regex-binding-right').on('click', function (e) {
-    e.preventDefault();
-    e.stopPropagation();
-    const presetName = $('#right-preset').val();
-    if (presetName) {
-      createRegexBindingModal(presetName);
-    } else {
-      alert('请先选择右侧预设');
-    }
   });
 
   // 预设选择变化时重置界面
@@ -3080,15 +3048,20 @@ function bindTransferEvents(apiInfo, modal) {
 
   // 智能导入按钮事件
 
-  $('#entry-search').on('input', function () {
-    filterDualEntries($(this).val());
-  });
-  $('#left-entry-search-inline').on('input', function () {
-    filterSideEntries('left', $(this).val());
-  });
-  $('#right-entry-search-inline').on('input', function () {
-    filterSideEntries('right', $(this).val());
-  });
+  // 添加防抖优化的条目搜索
+  const debouncedDualSearch = debounce(function () {
+    filterDualEntries($('#entry-search').val());
+  }, 300);
+  const debouncedLeftSearch = debounce(function () {
+    filterSideEntries('left', $('#left-entry-search-inline').val());
+  }, 300);
+  const debouncedRightSearch = debounce(function () {
+    filterSideEntries('right', $('#right-entry-search-inline').val());
+  }, 300);
+
+  $('#entry-search').on('input', debouncedDualSearch);
+  $('#left-entry-search-inline').on('input', debouncedLeftSearch);
+  $('#right-entry-search-inline').on('input', debouncedRightSearch);
   // 添加防抖功能，避免频繁重新加载
   let displayModeChangeTimeout;
   $('#left-display-mode, #right-display-mode, #single-display-mode').on('change', function () {
@@ -3338,16 +3311,8 @@ function displayEntries(entries, side) {
     return;
   }
 
-  const { isMobile, isSmallScreen } = getDeviceInfo();
-  const isDark = isDarkTheme();
-
-  // 主题颜色变量
-  const entryBg = isDark ? '#2d2d2d' : '#ffffff';
-  const entryBorder = isDark ? '#4b5563' : '#e5e7eb';
-  const entryTextColor = isDark ? '#e0e0e0' : '#111827';
-  const entryDetailsColor = isDark ? '#9ca3af' : '#6b7280';
-  const emptyTextColor = isDark ? '#9ca3af' : '#6b7280';
-  const checkboxAccent = isDark ? '#60a5fa' : '#374151';
+  const vars = CommonStyles.getVars();
+  const { isMobile, isSmallScreen } = vars;
 
   const renderPositionItem = (position, text) => `
    <div class="entry-item position-item" data-position="${position}" data-side="${side}" style="border-color: #10b981; background: #ecfdf5; transition: all 0.3s ease; cursor: pointer; position: relative; display: flex; align-items: center; padding: ${
@@ -3366,36 +3331,42 @@ function displayEntries(entries, side) {
     renderPositionItem('top', '📍 插入到顶部'),
     ...(entries.length === 0
       ? [
-          `<div style="color: ${emptyTextColor}; text-align: center; padding: ${
+          `<div style="color: ${vars.tipColor}; text-align: center; padding: ${
             isMobile ? '30px 15px' : '40px 20px'
           }; font-size: ${
             isMobile ? '14px' : '13px'
-          }; font-weight: 500;"><div style="font-size: 48px; margin-bottom: 15px; opacity: 0.3;">📭</div><div>没有条目</div></div>`,
+          }; font-weight: 500;"><div style="font-size: calc(var(--pt-font-size) * 3); margin-bottom: 15px; opacity: 0.3;">📭</div><div>没有条目</div></div>`,
         ]
       : entries.map(
           (entry, index) => `
          <div class="entry-item" data-index="${index}" data-side="${side}" data-identifier="${
             entry.identifier
-          }" style="border-color: ${entryBorder}; background: ${entryBg}; transition: all 0.3s ease; cursor: pointer; position: relative; display: flex; align-items: center; padding: ${
+          }" style="border-color: ${vars.inputBorder}; background: ${
+            vars.inputBg
+          }; transition: all 0.3s ease; cursor: pointer; position: relative; display: flex; align-items: center; padding: ${
             isSmallScreen ? '8px 6px' : isMobile ? '8px 8px' : '12px 14px'
-          }; margin-bottom: ${
-            isMobile ? '6px' : '6px'
-          }; border: 1px solid ${entryBorder}; border-radius: 8px; min-height: ${isMobile ? '32px' : '40px'};">
+          }; margin-bottom: ${isMobile ? '6px' : '6px'}; border: 1px solid ${
+            vars.inputBorder
+          }; border-radius: 8px; min-height: ${isMobile ? '32px' : '40px'};">
              <input type="checkbox" class="entry-checkbox" style="margin-right: ${isMobile ? '8px' : '10px'}; width: ${
             isMobile ? '14px' : '14px'
           }; height: ${
             isMobile ? '14px' : '14px'
-          }; accent-color: ${checkboxAccent}; cursor: pointer; position: relative; z-index: 10;">
+          }; accent-color: #60a5fa; cursor: pointer; position: relative; z-index: 10;">
              <div style="flex: 1; ${isMobile ? 'min-width: 0;' : ''}">
-                 <div class="entry-name" style="font-weight: 600; color: ${entryTextColor}; font-size: ${
+                 <div class="entry-name" style="font-weight: 600; color: ${vars.textColor}; font-size: ${
             isSmallScreen ? '11px' : isMobile ? '11px' : '13px'
           }; word-break: break-word; line-height: 1.2;">${entry.name}${
-            entry.isUninserted ? ' <span style="color: #f59e0b; font-size: 10px;">🔸未插入</span>' : ''
+            entry.isUninserted
+              ? ' <span style="color: #f59e0b; font-size: calc(var(--pt-font-size) * 0.625);">🔸未插入</span>'
+              : ''
           }</div>
                  ${
                    isMobile
                      ? ''
-                     : `<div class="entry-details" style="font-size: 11px; color: ${entryDetailsColor}; line-height: 1.4; margin-top: 2px;">
+                     : `<div class="entry-details" style="font-size: ${vars.fontSizeSmall}; color: ${
+                         vars.tipColor
+                       }; line-height: 1.4; margin-top: 2px;">
                      <span>👤 ${entry.role || 'system'}</span>
                      <span style="margin-left: 8px;">📍 ${entry.injection_position || 'relative'}</span>
                      <span style="margin-left: 8px;">🔢 ${entry.injection_depth ?? 4}</span>
@@ -3404,7 +3375,7 @@ function displayEntries(entries, side) {
                  </div>`
                  }
              </div>
-             <button class="create-here-btn" data-entry-index="${index}" data-entry-side="${side}" title="在此处新建" style="margin-left: 8px; padding: 4px 8px; background: #10b981; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; z-index: 20;">
+             <button class="create-here-btn" data-entry-index="${index}" data-entry-side="${side}" title="在此处新建" style="margin-left: 8px; padding: 4px 8px; background: #10b981; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: calc(var(--pt-font-size) * 0.75); z-index: 20;">
                  ➕
              </button>
          </div>`,
@@ -4057,16 +4028,26 @@ function showConfirmDialog(message, onConfirm) {
   const $ = getJQuery();
   $('#confirm-dialog-modal').remove();
 
+  // 获取当前字体大小设置
+  const savedSize = localStorage.getItem('preset-transfer-font-size');
+  const currentFontSize = savedSize ? parseInt(savedSize) : 16;
+
   const modalHtml = `
-    <div id="confirm-dialog-modal" style="position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.6);backdrop-filter:blur(8px);z-index:10003;display:flex;align-items:center;justify-content:center;padding:20px;animation:pt-fadeIn .2s ease-out">
+    <div id="confirm-dialog-modal" style="--pt-font-size: ${
+      CommonStyles.getVars().fontSize
+    }; position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.6);backdrop-filter:blur(8px);z-index:10003;display:flex;align-items:center;justify-content:center;padding:20px;animation:pt-fadeIn .2s ease-out">
         <div style="background:#fff;border-radius:16px;padding:24px;max-width:400px;width:90%;color:#374151;box-shadow:0 10px 30px rgba(0,0,0,0.15);animation:pt-slideUp .2s ease-out">
             <div style="margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #e5e7eb">
-                <h4 style="margin:0;font-size:18px;font-weight:700;color:#111827;display:flex;align-items:center;gap:8px"><span>⚠️</span>确认操作</h4>
+                <h4 style="margin:0;font-size:calc(var(--pt-font-size) * 1.125);font-weight:700;color:#111827;display:flex;align-items:center;gap:8px"><span>⚠️</span>确认操作</h4>
             </div>
-            <div style="margin:0;font-size:15px;line-height:1.6;color:#4b5563">${message}</div>
+            <div style="margin:0;font-size:calc(var(--pt-font-size) * 0.9375);line-height:1.6;color:#4b5563">${message}</div>
             <div style="display:flex;justify-content:flex-end;gap:12px;margin-top:24px">
-                <button id="confirm-dialog-ok" style="padding:10px 18px;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;transition:all .2s ease;background:#dc2626;color:#fff">✅ 确认</button>
-                <button id="confirm-dialog-cancel" style="padding:10px 18px;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;transition:all .2s ease;background:#e5e7eb;color:#4b5563">❌ 取消</button>
+                <button id="confirm-dialog-ok" style="padding:10px 18px;border:none;border-radius:8px;cursor:pointer;font-size:${
+                  vars.fontSizeMedium
+                };font-weight:600;transition:all .2s ease;background:#dc2626;color:#fff">✅ 确认</button>
+                <button id="confirm-dialog-cancel" style="padding:10px 18px;border:none;border-radius:8px;cursor:pointer;font-size:${
+                  vars.fontSizeMedium
+                };font-weight:600;transition:all .2s ease;background:#e5e7eb;color:#4b5563">❌ 取消</button>
             </div>
         </div>
     </div>`;
@@ -4189,7 +4170,7 @@ function createCompareModal(apiInfo, leftPreset, rightPreset, commonEntries) {
                     `
                         : `
                         <div class="no-diff-message" style="text-align: center; padding: 40px 20px; color: #6b7280;">
-                            <div style="font-size: 48px; margin-bottom: 15px; opacity: 0.5;">✅</div>
+                            <div style="font-size: calc(var(--pt-font-size) * 3); margin-bottom: 15px; opacity: 0.5;">✅</div>
                             <div>两个预设之间没有发现差异。</div>
                         </div>
                     `
@@ -4288,182 +4269,189 @@ function createCompareEntryHtml(entry, leftPreset, rightPreset) {
 }
 
 function applyCompareModalStyles(isMobile, isSmallScreen, isPortrait) {
-  const isDark = isDarkTheme();
-  const bgColor = isDark ? '#1a1a1a' : '#ffffff';
-  const textColor = isDark ? '#e0e0e0' : '#374151';
-  const borderColor = isDark ? '#374151' : '#e5e7eb';
-  const sectionBg = isDark ? '#262626' : '#f9fafb';
+  // 使用公共样式管理器 - 又一个简化成功喵~
+  const vars = CommonStyles.getVars();
 
   const styles = `
         #compare-modal {
-            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-            z-index: 10002; display: flex; align-items: ${isMobile ? 'flex-start' : 'center'};
-            justify-content: center; padding: ${isMobile ? '10px' : '20px'};
-            ${isMobile ? 'padding-top: 20px;' : ''}
-            overflow-y: auto; -webkit-overflow-scrolling: touch; animation: pt-fadeIn 0.3s ease-out;
+            --pt-font-size: ${vars.fontSize};
+            ${CommonStyles.getModalBaseStyles({ maxWidth: vars.maxWidthLarge })}
+            z-index: 10002; align-items: ${vars.isMobile ? 'flex-start' : 'center'};
+            ${vars.isMobile ? 'padding-top: 20px;' : ''}
+            overflow-y: auto; -webkit-overflow-scrolling: touch;
         }
         #compare-modal .compare-modal-content {
-            background: ${bgColor}; border-radius: ${isMobile ? '16px' : '20px'};
-            padding: ${isSmallScreen ? '24px' : isMobile ? '28px' : '32px'};
-            max-width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '900px'};
-            width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '90%'};
-            max-height: ${isMobile ? '90vh' : '85vh'};
-            overflow-y: auto; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            ${isMobile ? '-webkit-overflow-scrolling: touch;' : ''}
+            background: ${vars.bgColor}; border-radius: ${vars.isMobile ? vars.borderRadius : '20px'};
+            padding: ${vars.isSmallScreen ? vars.padding : vars.isMobile ? vars.paddingLarge : '32px'};
+            max-width: ${vars.isSmallScreen ? '95vw' : vars.isMobile ? '90vw' : '900px'};
+            width: ${vars.isSmallScreen ? '95vw' : vars.isMobile ? '90vw' : '90%'};
+            max-height: ${vars.isMobile ? '90vh' : '85vh'};
+            overflow-y: auto; color: ${vars.textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            ${vars.isMobile ? '-webkit-overflow-scrolling: touch;' : ''}
             animation: pt-slideUp 0.3s ease-out;
             transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
         }
         #compare-modal .compare-modal-header {
-            text-align: center; margin-bottom: ${isMobile ? '24px' : '28px'};
-            padding-bottom: ${isMobile ? '18px' : '22px'}; border-bottom: 1px solid ${borderColor};
+            text-align: center; margin-bottom: ${vars.isMobile ? vars.padding : vars.paddingLarge};
+            padding-bottom: ${vars.isMobile ? '18px' : '22px'}; border-bottom: 1px solid ${vars.borderColor};
         }
         #compare-modal .compare-modal-header > div:first-child {
             display: flex; align-items: center; justify-content: center;
-            gap: 12px; padding: ${isMobile ? '8px 0' : '12px 0'}; position: relative;
+            gap: ${vars.gap}; padding: ${vars.isMobile ? '8px 0' : '12px 0'}; position: relative;
         }
         #compare-modal .close-compare-btn {
             position: absolute; right: 0; top: 50%; transform: translateY(-50%);
-            background: none; border: none; font-size: ${isMobile ? '18px' : '16px'};
-            cursor: pointer; color: ${isDark ? '#9ca3af' : '#6b7280'}; padding: 4px;
+            background: none; border: none; font-size: ${vars.isMobile ? vars.fontSizeLarge : vars.fontSize};
+            cursor: pointer; color: ${vars.tipColor}; padding: 4px;
         }
-        #compare-modal .close-compare-btn:hover { color: ${textColor}; }
-        #compare-modal .compare-modal-header span { font-size: ${isSmallScreen ? '28px' : isMobile ? '32px' : '36px'}; }
+        #compare-modal .close-compare-btn:hover { color: ${vars.textColor}; }
+        #compare-modal .compare-modal-header span {
+            font-size: ${vars.isSmallScreen ? '1.75em' : vars.isMobile ? '2em' : '2.25em'};
+        }
         #compare-modal .compare-modal-header h2 {
-            margin: 0; font-size: ${isSmallScreen ? '22px' : isMobile ? '24px' : '28px'};
-            font-weight: 700; color: ${isDark ? '#f3f4f6' : '#111827'}; letter-spacing: -0.5px;
+            margin: 0; font-size: ${vars.isSmallScreen ? '1.375em' : vars.isMobile ? '1.5em' : '1.75em'};
+            font-weight: 700; color: ${vars.textColor}; letter-spacing: -0.5px;
         }
         #compare-modal .compare-info {
-            margin-top: 8px; font-size: ${isMobile ? '14px' : '13px'};
-            color: ${isDark ? '#9ca3af' : '#6b7280'}; font-weight: 500;
+            margin-top: 8px; font-size: ${vars.fontSizeMedium};
+            color: ${vars.tipColor}; font-weight: 500;
         }
         #compare-modal .compare-stats {
-            display: flex; justify-content: center; gap: ${isMobile ? '20px' : '30px'};
-            margin-bottom: ${isMobile ? '24px' : '28px'}; flex-wrap: wrap;
+            display: flex; justify-content: center; gap: ${vars.isMobile ? '20px' : '30px'};
+            margin-bottom: ${vars.isMobile ? vars.padding : vars.paddingLarge}; flex-wrap: wrap;
         }
         #compare-modal .stat-item {
-            text-align: center; padding: ${isMobile ? '12px' : '16px'};
-            background: ${sectionBg}; border-radius: 12px; min-width: ${isMobile ? '80px' : '100px'};
+            text-align: center; padding: ${vars.isMobile ? vars.paddingSmall : vars.paddingSmall};
+            background: ${vars.sectionBg}; border-radius: ${vars.borderRadiusMedium}; min-width: ${
+    vars.isMobile ? '80px' : '100px'
+  };
         }
         #compare-modal .stat-number {
-            display: block; font-size: ${isMobile ? '24px' : '28px'}; font-weight: 700;
-            color: ${textColor}; margin-bottom: 4px;
+            display: block; font-size: ${vars.isMobile ? '1.5em' : '1.75em'}; font-weight: 700;
+            color: ${vars.textColor}; margin-bottom: 4px;
         }
         #compare-modal .stat-number.different { color: #dc2626; }
         #compare-modal .stat-number.same { color: #059669; }
         #compare-modal .stat-label {
-            font-size: ${isMobile ? '12px' : '11px'}; color: ${isDark ? '#9ca3af' : '#6b7280'}; font-weight: 500;
+            font-size: ${vars.fontSizeSmall}; color: ${vars.tipColor}; font-weight: 500;
         }
         #compare-modal .compare-content h3 {
-            margin: ${isMobile ? '24px 0 16px' : '28px 0 20px'}; font-size: ${isMobile ? '18px' : '20px'};
-            font-weight: 600; color: ${textColor};
+            margin: ${vars.isMobile ? '24px 0 16px' : '28px 0 20px'}; font-size: ${
+    vars.isMobile ? vars.fontSizeLarge : '1.25em'
+  };
+            font-weight: 600; color: ${vars.textColor};
         }
         #compare-modal .compare-entry {
-            border: 1px solid ${borderColor}; border-radius: 12px; margin-bottom: ${isMobile ? '16px' : '20px'};
-            background: ${bgColor}; overflow: hidden;
+            border: 1px solid ${vars.borderColor}; border-radius: ${vars.borderRadiusMedium}; margin-bottom: ${
+    vars.isMobile ? '16px' : '20px'
+  };
+            background: ${vars.bgColor}; overflow: hidden;
         }
         #compare-modal .compare-entry-header {
-            background: ${sectionBg}; padding: ${isMobile ? '12px 16px' : '14px 20px'};
-            border-bottom: 1px solid ${borderColor};
+            background: ${vars.sectionBg}; padding: ${vars.isMobile ? '12px 16px' : '14px 20px'};
+            border-bottom: 1px solid ${vars.borderColor};
         }
         #compare-modal .compare-entry-header {
             display: flex; justify-content: space-between; align-items: center;
-            flex-wrap: wrap; gap: ${isMobile ? '8px' : '12px'};
+            flex-wrap: wrap; gap: ${vars.isMobile ? '8px' : vars.gap};
         }
         #compare-modal .compare-entry-header h4 {
-            margin: 0; font-size: ${isMobile ? '16px' : '18px'}; font-weight: 600; color: ${textColor};
+            margin: 0; font-size: ${vars.isMobile ? vars.fontSize : vars.fontSizeLarge};
+            font-weight: 600; color: ${vars.textColor};
             flex: 1; min-width: 0;
         }
         #compare-modal .compare-actions {
-            display: flex; gap: ${isMobile ? '6px' : '8px'}; flex-wrap: wrap;
-            ${isMobile ? 'display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;' : ''}
+            display: flex; gap: ${vars.isMobile ? '6px' : '8px'}; flex-wrap: wrap;
+            ${vars.isMobile ? 'display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;' : ''}
         }
         #compare-modal .compare-action-btn {
-            padding: ${isMobile ? '4px 8px' : '6px 10px'}; border: 1px solid ${isDark ? '#4b5563' : '#d1d5db'};
-            background: ${isDark ? '#374151' : '#ffffff'}; color: ${textColor}; border-radius: 6px; cursor: pointer;
-            font-size: ${isMobile ? '11px' : '12px'}; font-weight: 500;
+            padding: ${vars.isMobile ? '4px 8px' : '6px 10px'}; border: 1px solid ${vars.inputBorder};
+            background: ${vars.inputBg}; color: ${vars.textColor}; border-radius: 6px; cursor: pointer;
+            font-size: ${vars.fontSizeSmall}; font-weight: 500;
             transition: all 0.2s ease; white-space: nowrap;
         }
         #compare-modal .compare-action-btn:hover {
-            background: ${isDark ? '#4b5563' : '#f3f4f6'}; border-color: ${isDark ? '#6b7280' : '#9ca3af'};
+            opacity: 0.8;
         }
         #compare-modal .compare-action-btn.edit-btn {
-            background: ${isDark ? '#1e3a8a' : '#dbeafe'}; border-color: #3b82f6; color: ${
-    isDark ? '#93c5fd' : '#1d4ed8'
-  };
+            background: #dbeafe; border-color: #3b82f6; color: #1d4ed8;
         }
         #compare-modal .compare-action-btn.edit-btn:hover {
-            background: ${isDark ? '#1e40af' : '#bfdbfe'};
+            background: #bfdbfe;
         }
         #compare-modal .compare-sides {
-            display: ${isMobile ? 'flex' : 'grid'};
-            ${isMobile ? 'flex-direction: column;' : 'grid-template-columns: 1fr 1fr;'}
+            display: ${vars.isMobile ? 'flex' : 'grid'};
+            ${vars.isMobile ? 'flex-direction: column;' : 'grid-template-columns: 1fr 1fr;'}
         }
         #compare-modal .compare-side {
-            padding: ${isMobile ? '16px' : '20px'};
+            padding: ${vars.isMobile ? vars.paddingSmall : vars.margin};
         }
         #compare-modal .compare-side.right-side {
-            border-left: ${isMobile ? 'none' : `1px solid ${borderColor}`};
-            border-top: ${isMobile ? `1px solid ${borderColor}` : 'none'};
+            border-left: ${vars.isMobile ? 'none' : `1px solid ${vars.borderColor}`};
+            border-top: ${vars.isMobile ? `1px solid ${vars.borderColor}` : 'none'};
         }
         #compare-modal .compare-side h5 {
-            margin: 0 0 ${isMobile ? '12px' : '16px'} 0; font-size: ${isMobile ? '14px' : '16px'};
-            font-weight: 600; color: ${isDark ? '#9ca3af' : '#6b7280'};
+            margin: 0 0 ${vars.isMobile ? '12px' : '16px'} 0; font-size: ${
+    vars.isMobile ? vars.fontSizeMedium : vars.fontSize
+  };
+            font-weight: 600; color: ${vars.tipColor};
         }
         #compare-modal .detail-row {
-            margin-bottom: ${isMobile ? '8px' : '12px'}; display: flex; align-items: flex-start;
-            gap: ${isMobile ? '4px' : '8px'};
-            ${isMobile ? 'flex-direction: column; align-items: stretch;' : ''}
+            margin-bottom: ${vars.isMobile ? '8px' : vars.gap}; display: flex; align-items: flex-start;
+            gap: ${vars.isMobile ? '4px' : '8px'};
+            ${vars.isMobile ? 'flex-direction: column; align-items: stretch;' : ''}
         }
         #compare-modal .detail-row .label {
-            font-weight: 600; color: ${isDark ? '#9ca3af' : '#6b7280'}; font-size: ${isMobile ? '12px' : '13px'};
-            min-width: ${isMobile ? '40px' : '50px'};
-            ${isMobile ? 'margin-bottom: 2px;' : ''}
+            font-weight: 600; color: ${vars.tipColor}; font-size: ${vars.fontSizeSmall};
+            min-width: ${vars.isMobile ? '40px' : '50px'};
+            ${vars.isMobile ? 'margin-bottom: 2px;' : ''}
         }
         #compare-modal .detail-row .value {
-            font-size: ${isMobile ? '12px' : '13px'}; color: ${textColor};
+            font-size: ${vars.fontSizeSmall}; color: ${vars.textColor};
         }
         #compare-modal .detail-row .value.different {
-            background: ${isDark ? '#7f1d1d' : '#fef2f2'}; color: #dc2626; padding: 2px 6px; border-radius: 4px;
+            background: #fef2f2; color: #dc2626; padding: 2px 6px; border-radius: 4px;
             font-weight: 600;
         }
         #compare-modal .content-preview {
-            background: ${isDark ? '#1f2937' : '#f9fafb'}; padding: ${isMobile ? '8px' : '10px'}; border-radius: 6px;
-            font-size: ${isMobile ? '11px' : '12px'}; color: ${textColor}; line-height: 1.4;
+            background: ${vars.subBg}; padding: ${vars.isMobile ? '8px' : '10px'}; border-radius: 6px;
+            font-size: ${vars.fontSizeSmall}; color: ${vars.textColor}; line-height: 1.4;
             font-family: 'Consolas', 'Monaco', 'Courier New', monospace; white-space: pre-wrap;
             word-break: break-word; max-height: 100px; overflow-y: auto;
-            ${isMobile ? 'max-height: 60px; width: 100%; min-height: 40px;' : ''}
-            border: 1px solid ${isDark ? '#374151' : 'transparent'};
+            ${vars.isMobile ? 'max-height: 60px; width: 100%; min-height: 40px;' : ''}
+            border: 1px solid ${vars.borderColor};
         }
         #compare-modal .content-preview.different {
-            background: ${isDark ? '#5c1a1a' : '#fef2f2'}; border: 1px solid ${isDark ? '#dc2626' : '#fecaca'};
-            color: ${isDark ? '#fecaca' : '#dc2626'} !important;
+            background: #fef2f2; border: 1px solid #fecaca;
+            color: #dc2626 !important;
         }
         #compare-modal .diff-highlight {
-            background-color: ${isDark ? '#8c2a2a' : '#ffcdd2'};
-            color: ${isDark ? '#fee2e2' : '#c62828'};
+            background-color: #ffcdd2;
+            color: #c62828;
             padding: 1px 3px;
             border-radius: 3px;
             font-weight: 600;
         }
         #compare-modal .same-entries {
-            display: flex; flex-wrap: wrap; gap: ${isMobile ? '8px' : '10px'};
+            display: flex; flex-wrap: wrap; gap: ${vars.isMobile ? '8px' : '10px'};
         }
         #compare-modal .same-entry {
-            background: #ecfdf5; color: #059669; padding: ${isMobile ? '6px 12px' : '8px 16px'};
-            border-radius: 20px; font-size: ${isMobile ? '12px' : '13px'}; font-weight: 500;
+            background: #ecfdf5; color: #059669; padding: ${vars.isMobile ? '6px 12px' : '8px 16px'};
+            border-radius: 20px; font-size: ${vars.fontSizeSmall}; font-weight: 500;
         }
         #compare-modal .compare-modal-actions {
-            display: flex; justify-content: center; margin-top: ${isMobile ? '24px' : '28px'};
-            padding-top: ${isMobile ? '20px' : '24px'}; border-top: 1px solid ${borderColor};
+            display: flex; justify-content: center; margin-top: ${vars.isMobile ? vars.padding : vars.paddingLarge};
+            padding-top: ${vars.isMobile ? vars.margin : vars.padding}; border-top: 1px solid ${vars.borderColor};
         }
         #compare-modal .compare-modal-actions button {
-            padding: ${isMobile ? '14px 24px' : '12px 22px'}; border: none; color: #ffffff;
-            border-radius: 8px; cursor: pointer; font-size: ${isMobile ? '15px' : '14px'};
+            padding: ${vars.buttonPadding}; border: none; color: #ffffff;
+            border-radius: ${vars.buttonRadius}; cursor: pointer; font-size: ${vars.fontSizeMedium};
             font-weight: 600; transition: all 0.3s ease; letter-spacing: 0.3px;
             background: #9ca3af; min-width: 100px;
         }
         #compare-modal button:hover { opacity: 0.9; }
+
+
     `;
 
   if (!$('#compare-modal-styles').length) {
@@ -4499,12 +4487,12 @@ function bindCompareModalEvents(apiInfo, leftPreset, rightPreset, commonEntries)
         );
         break;
       case 'edit-left':
-        modal.remove();
-        editEntryInPreset(apiInfo, leftPreset, entry.left, entryName);
+        modal.hide(); // 隐藏而不是移除比较模态框
+        editEntryInPreset(apiInfo, leftPreset, entry.left, entryName, true); // 传递来自比较界面的标记
         break;
       case 'edit-right':
-        modal.remove();
-        editEntryInPreset(apiInfo, rightPreset, entry.right, entryName);
+        modal.hide(); // 隐藏而不是移除比较模态框
+        editEntryInPreset(apiInfo, rightPreset, entry.right, entryName, true); // 传递来自比较界面的标记
         break;
     }
   });
@@ -4564,7 +4552,7 @@ async function copyEntryBetweenPresets(apiInfo, fromPreset, toPreset, entryData,
   }
 }
 
-function editEntryInPreset(apiInfo, presetName, entryData, entryName) {
+function editEntryInPreset(apiInfo, presetName, entryData, entryName, fromCompare = false) {
   // 找到条目在预设中的索引
   const presetData = getPresetDataFromManager(apiInfo, presetName);
   const entries = getPromptEntries(presetData);
@@ -4575,8 +4563,8 @@ function editEntryInPreset(apiInfo, presetName, entryData, entryName) {
     return;
   }
 
-  // 打开编辑模态框
-  createEditEntryModal(apiInfo, presetName, entryData, null, false, null, entryIndex);
+  // 打开编辑模态框，传递来自比较界面的标记
+  createEditEntryModal(apiInfo, presetName, entryData, null, false, null, entryIndex, 'default', fromCompare);
 }
 
 function editSelectedEntry(apiInfo, side) {
@@ -4757,6 +4745,7 @@ function createEditEntryModal(
   side = null,
   entryIndex = null,
   displayMode = 'default',
+  fromCompare = false,
 ) {
   const $ = getJQuery();
   const { isMobile, isSmallScreen, isPortrait } = getDeviceInfo();
@@ -4767,8 +4756,7 @@ function createEditEntryModal(
   const isNewEntry = entry.isNewEntry || false;
   const modalTitle = isNewEntry ? '新建条目' : '编辑条目';
   const modalIcon = isNewEntry ? '✨' : '✏️';
-  const isDark = isDarkTheme();
-  const tipColor = isDark ? '#9ca3af' : '#6b7280';
+  const vars = CommonStyles.getVars();
 
   // 如果是新建条目，使用默认值；如果是编辑，使用现有值
   const entryData = isNewEntry ? createEntryWithNewFields({ name: '新提示词' }) : ensureNewVersionFields(entry);
@@ -4793,8 +4781,8 @@ function createEditEntryModal(
                     </div>
                     <div class="preset-info">预设: ${presetName}</div>
                     <div class="edit-tip" style="margin-top: 8px; font-size: ${
-                      isMobile ? '12px' : '11px'
-                    }; color: ${tipColor}; text-align: center; opacity: 0.8;">
+                      isMobile ? 'calc(var(--pt-font-size) * 0.75)' : 'calc(var(--pt-font-size) * 0.6875)'
+                    }; color: ${vars.tipColor}; text-align: center; opacity: 0.8;">
                         💡 提示：只能通过点击"取消"按钮关闭此界面，避免误触
                     </div>
                 </div>
@@ -4897,76 +4885,79 @@ function createEditEntryModal(
     `;
 
   $('body').append(modalHtml);
-  $('#edit-entry-modal').data({ apiInfo, presetName, entry, insertPosition, autoEnable, side, displayMode });
+  $('#edit-entry-modal').data({
+    apiInfo,
+    presetName,
+    entry,
+    insertPosition,
+    autoEnable,
+    side,
+    displayMode,
+    fromCompare,
+  });
   applyEditModalStyles(isMobile, isSmallScreen, isPortrait);
-  bindEditModalEvents(apiInfo, presetName, entry, insertPosition, autoEnable, side, displayMode);
+  bindEditModalEvents(apiInfo, presetName, entry, insertPosition, autoEnable, side, displayMode, fromCompare);
 }
 
 function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
-  const isDark = isDarkTheme();
-  const bgColor = isDark ? '#1a1a1a' : '#ffffff';
-  const textColor = isDark ? '#e0e0e0' : '#374151';
-  const borderColor = isDark ? '#374151' : '#e5e7eb';
-  const inputBg = isDark ? '#222222' : '#ffffff';
-  const inputBorder = isDark ? '#4b5563' : '#d1d5db';
-
+  // 使用公共样式管理器 - 第三个模态框简化完成喵~
+  const vars = CommonStyles.getVars();
   const styles = `
         #edit-entry-modal {
-            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-            z-index: 10001; display: flex; align-items: ${isMobile ? 'flex-start' : 'center'};
-            justify-content: center; padding: ${isMobile ? '10px' : '20px'};
-            ${isMobile ? 'padding-top: 20px;' : ''}
-            overflow-y: auto; -webkit-overflow-scrolling: touch; animation: pt-fadeIn 0.3s ease-out;
+            --pt-font-size: ${vars.fontSize};
+            ${CommonStyles.getModalBaseStyles()}
+            align-items: ${vars.isMobile ? 'flex-start' : 'center'};
+            ${vars.isMobile ? 'padding-top: 20px;' : ''}
+            overflow-y: auto; -webkit-overflow-scrolling: touch;
         }
         #edit-entry-modal .edit-modal-content {
-            background: ${bgColor}; border-radius: ${isMobile ? '16px' : '20px'};
-            padding: ${isSmallScreen ? '24px' : isMobile ? '28px' : '32px'};
-            max-width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '600px'};
-            width: ${isSmallScreen ? '95vw' : isMobile ? '90vw' : '90%'};
-            max-height: ${isMobile ? '90vh' : '85vh'};
-            overflow-y: auto; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            ${isMobile ? '-webkit-overflow-scrolling: touch;' : ''}
+            background: ${vars.bgColor}; border-radius: ${vars.isMobile ? vars.borderRadius : '20px'};
+            padding: ${vars.isSmallScreen ? vars.padding : vars.isMobile ? vars.paddingLarge : '32px'};
+            max-width: ${vars.isSmallScreen ? '95vw' : vars.isMobile ? '90vw' : vars.maxWidth};
+            width: ${vars.isSmallScreen ? '95vw' : vars.isMobile ? '90vw' : '90%'};
+            max-height: ${vars.isMobile ? '90vh' : '85vh'};
+            overflow-y: auto; color: ${vars.textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            ${vars.isMobile ? '-webkit-overflow-scrolling: touch;' : ''}
             animation: pt-slideUp 0.3s ease-out;
             transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
         }
         #edit-entry-modal .edit-modal-header {
-            text-align: center; margin-bottom: ${isMobile ? '24px' : '28px'};
-            padding-bottom: ${isMobile ? '18px' : '22px'}; border-bottom: 1px solid ${borderColor};
+            text-align: center; margin-bottom: ${vars.isMobile ? vars.padding : vars.paddingLarge};
+            padding-bottom: ${vars.isMobile ? '18px' : '22px'}; border-bottom: 1px solid ${vars.borderColor};
         }
         #edit-entry-modal .edit-modal-header > div:first-child {
             display: flex; align-items: center; justify-content: center;
-            gap: 12px; padding: ${isMobile ? '8px 0' : '12px 0'};
+            gap: ${vars.gap}; padding: ${vars.isMobile ? '8px 0' : '12px 0'};
         }
-        #edit-entry-modal .edit-modal-header span { font-size: ${isSmallScreen ? '28px' : isMobile ? '32px' : '36px'}; }
+        #edit-entry-modal .edit-modal-header span {
+            font-size: ${vars.isSmallScreen ? '1.75em' : vars.isMobile ? '2em' : '2.25em'};
+        }
         #edit-entry-modal .edit-modal-header h2 {
-            margin: 0; font-size: ${isSmallScreen ? '22px' : isMobile ? '24px' : '28px'};
-            font-weight: 700; color: ${isDark ? '#f3f4f6' : '#111827'}; letter-spacing: -0.5px;
+            margin: 0; font-size: ${vars.isSmallScreen ? '1.375em' : vars.isMobile ? '1.5em' : '1.75em'};
+            font-weight: 700; color: ${vars.textColor}; letter-spacing: -0.5px;
         }
         #edit-entry-modal .preset-info {
-            margin-top: 8px; font-size: ${isMobile ? '14px' : '13px'};
-            color: ${isDark ? '#9ca3af' : '#6b7280'}; font-weight: 500;
+            margin-top: 8px; font-size: ${vars.fontSizeMedium};
+            color: ${vars.tipColor}; font-weight: 500;
         }
         #edit-entry-modal .edit-form {
-            display: flex; flex-direction: column; gap: ${isMobile ? '20px' : '18px'};
+            display: flex; flex-direction: column; gap: ${vars.isMobile ? vars.margin : '18px'};
         }
         #edit-entry-modal .form-field {
             display: flex; flex-direction: column;
         }
         #edit-entry-modal .form-field label {
-            margin-bottom: 8px; font-weight: 600; font-size: ${isMobile ? '16px' : '15px'};
-            color: ${textColor}; display: flex; align-items: center; gap: 8px;
+            margin-bottom: 8px; font-weight: 600; font-size: ${vars.isMobile ? vars.fontSize : vars.fontSizeMedium};
+            color: ${vars.textColor}; display: flex; align-items: center; gap: 8px;
         }
         #edit-entry-modal .form-field input, #edit-entry-modal .form-field select, #edit-entry-modal .form-field textarea {
-            padding: ${isMobile ? '14px 16px' : '12px 14px'};
-            background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder};
-            border-radius: 8px; font-size: ${isMobile ? '15px' : '14px'}; font-weight: 400;
+            padding: ${vars.isMobile ? '14px 16px' : '12px 14px'};
+            background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder};
+            border-radius: ${vars.borderRadiusSmall}; font-size: ${vars.fontSizeMedium}; font-weight: 400;
             transition: all 0.3s ease; box-sizing: border-box;
         }
         #edit-entry-modal .form-field select {
-            appearance: none; background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 5"><path fill="${
-              isDark ? '%23e0e0e0' : '%236b7280'
-            }" d="M2 0L0 2h4zm0 5L0 3h4z"/></svg>');
+            appearance: none; background-image: url('data:image/svg+xml;charset=US-ASCII,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 5"><path fill="%236b7280" d="M2 0L0 2h4zm0 5L0 3h4z"/></svg>');
             background-repeat: no-repeat; background-position: right 16px center;
             background-size: 12px; padding-right: 45px; cursor: pointer;
         }
@@ -4975,20 +4966,20 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
             line-height: 1.5;
         }
         #edit-entry-modal .trigger-container {
-            display: flex; flex-wrap: wrap; gap: 10px; background: ${inputBg};
-            padding: 10px; border-radius: 8px; border: 1px solid ${inputBorder};
+            display: flex; flex-wrap: wrap; gap: 10px; background: ${vars.inputBg};
+            padding: 10px; border-radius: ${vars.borderRadiusSmall}; border: 1px solid ${vars.inputBorder};
         }
         #edit-entry-modal .ai-assistant-section {
-            padding: ${isMobile ? '12px' : '15px'};
-            margin-top: ${isMobile ? '8px' : '10px'};
-            background: ${isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.02)'};
-            border: 1px solid ${borderColor};
-            border-radius: 8px;
+            padding: ${vars.isMobile ? vars.paddingSmall : '15px'};
+            margin-top: ${vars.isMobile ? '8px' : '10px'};
+            background: ${vars.sectionBg};
+            border: 1px solid ${vars.borderColor};
+            border-radius: ${vars.borderRadiusSmall};
         }
         #edit-entry-modal .ai-controls {
             display: grid;
             grid-template-columns: 1fr;
-            gap: ${isMobile ? '8px' : '10px'};
+            gap: ${vars.isMobile ? '8px' : '10px'};
         }
         @media (min-width: 600px) {
             #edit-entry-modal .ai-controls {
@@ -4998,48 +4989,48 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
          #edit-entry-modal .ai-buttons-container {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: ${isMobile ? '8px' : '10px'};
-            margin-top: ${isMobile ? '8px' : '10px'};
+            gap: ${vars.isMobile ? '8px' : '10px'};
+            margin-top: ${vars.isMobile ? '8px' : '10px'};
         }
         #edit-entry-modal .ai-btn {
-            background-color: ${isDark ? '#4b5563' : '#6b7280'};
+            background-color: ${vars.tipColor};
             color: white;
             border: none;
-            padding: ${isMobile ? '8px 12px' : '10px 15px'};
+            padding: ${vars.isMobile ? '8px 12px' : '10px 15px'};
             border-radius: 6px;
             cursor: pointer;
             transition: background-color 0.2s;
             font-weight: 500;
-            font-size: ${isMobile ? '14px' : '15px'};
-            min-height: ${isMobile ? '40px' : '44px'};
+            font-size: ${vars.fontSizeMedium};
+            min-height: ${vars.isMobile ? '40px' : '44px'};
         }
         #edit-entry-modal .ai-btn:hover {
-            background-color: ${isDark ? '#6b7280' : '#4b5563'};
+            opacity: 0.8;
         }
         #edit-entry-modal #ai-style-entry-selector {
-            padding: ${isMobile ? '10px 12px' : '12px 15px'};
-            font-size: ${isMobile ? '14px' : '15px'};
+            padding: ${vars.isMobile ? '10px 12px' : '12px 15px'};
+            font-size: ${vars.fontSizeMedium};
             border-radius: 6px;
-            border: 1px solid ${borderColor};
-            background: ${inputBg};
-            color: ${textColor};
+            border: 1px solid ${vars.borderColor};
+            background: ${vars.inputBg};
+            color: ${vars.textColor};
         }
         #edit-entry-modal #ai-additional-prompt {
-            padding: ${isMobile ? '10px 12px' : '12px 15px'};
-            font-size: ${isMobile ? '14px' : '15px'};
+            padding: ${vars.isMobile ? '10px 12px' : '12px 15px'};
+            font-size: ${vars.fontSizeMedium};
             border-radius: 6px;
-            border: 1px solid ${borderColor};
-            background: ${inputBg};
-            color: ${textColor};
-            min-height: ${isMobile ? '80px' : '100px'};
+            border: 1px solid ${vars.borderColor};
+            background: ${vars.inputBg};
+            color: ${vars.textColor};
+            min-height: ${vars.isMobile ? '80px' : '100px'};
             resize: vertical;
             font-family: inherit;
             line-height: 1.4;
         }
         #edit-entry-modal .ai-assistant-section label {
-            font-size: ${isMobile ? '15px' : '16px'};
+            font-size: ${vars.isMobile ? vars.fontSizeMedium : vars.fontSize};
             font-weight: 600;
-            margin-bottom: ${isMobile ? '8px' : '10px'};
+            margin-bottom: ${vars.isMobile ? '8px' : '10px'};
         }
         #edit-entry-modal .ai-assistant-section label span {
             display: flex;
@@ -5051,11 +5042,11 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
             width: 100%;
             box-sizing: border-box;
             padding: 10px;
-            background: ${inputBg};
-            color: ${textColor};
-            border: 1px solid ${inputBorder};
+            background: ${vars.inputBg};
+            color: ${vars.textColor};
+            border: 1px solid ${vars.inputBorder};
             border-radius: 6px;
-            font-size: 13px;
+            font-size: ${vars.fontSizeSmall};
             min-height: 60px;
             resize: vertical;
         }
@@ -5067,10 +5058,10 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
             border-radius: 6px;
             cursor: pointer;
             transition: background-color 0.2s ease;
-            background-color: ${isDark ? '#374151' : '#f3f4f6'};
+            background-color: ${vars.sectionBg};
         }
         #edit-entry-modal .trigger-label:hover {
-            background-color: ${isDark ? '#4b5563' : '#e5e7eb'};
+            background-color: ${vars.borderColor};
         }
         #edit-entry-modal .trigger-label input[type="checkbox"] {
             display: none;
@@ -5078,8 +5069,8 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
         #edit-entry-modal .trigger-label span {
             position: relative;
             padding-left: 25px;
-            font-size: 14px;
-            color: ${textColor};
+            font-size: ${vars.fontSizeMedium};
+            color: ${vars.textColor};
         }
         #edit-entry-modal .trigger-label span::before {
             content: '';
@@ -5089,9 +5080,9 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
             transform: translateY(-50%);
             width: 18px;
             height: 18px;
-            border: 2px solid ${isDark ? '#6b7280' : '#d1d5db'};
+            border: 2px solid ${vars.inputBorder};
             border-radius: 4px;
-            background-color: ${inputBg};
+            background-color: ${vars.inputBg};
             transition: all 0.2s ease;
         }
         #edit-entry-modal .trigger-label input[type="checkbox"]:checked + span::before {
@@ -5116,13 +5107,15 @@ function applyEditModalStyles(isMobile, isSmallScreen, isPortrait) {
         }
         #edit-entry-modal .edit-modal-actions button {
             padding: ${isMobile ? '12px 16px' : '12px 22px'}; border: none; color: #ffffff;
-            border-radius: 8px; cursor: pointer; font-size: ${isMobile ? '14px' : '14px'};
+            border-radius: 8px; cursor: pointer; font-size: calc(var(--pt-font-size) * 0.875);
             font-weight: 600; transition: all 0.3s ease; letter-spacing: 0.3px;
             flex: ${isMobile ? '1' : 'none'};
         }
         #edit-entry-modal #save-entry-changes { background: #059669; min-width: ${isMobile ? 'auto' : '140px'}; }
         #edit-entry-modal #cancel-edit { background: #9ca3af; min-width: ${isMobile ? 'auto' : '100px'}; }
         #edit-entry-modal #find-replace-btn { min-width: ${isMobile ? 'auto' : '120px'}; }
+
+
     `;
 
   if (!$('#edit-entry-modal-styles').length) {
@@ -5138,6 +5131,7 @@ function bindEditModalEvents(
   autoEnable = false,
   side = null,
   displayMode = 'default',
+  fromCompare = false,
 ) {
   const $ = getJQuery();
   const modal = $('#edit-entry-modal');
@@ -5275,6 +5269,18 @@ function bindEditModalEvents(
 
       modal.remove();
 
+      // 如果来自比较界面，重新显示比较模态框
+      if (fromCompare) {
+        const compareModal = $('#compare-modal');
+        if (compareModal.length) {
+          compareModal.show();
+          // 重新打开比较模态框以显示更新后的状态
+          setTimeout(() => {
+            showCompareModal(apiInfo);
+          }, 100);
+        }
+      }
+
       // 刷新主界面的条目列表
       if ($('#preset-transfer-modal').length) {
         if (side) {
@@ -5298,7 +5304,17 @@ function bindEditModalEvents(
     showFindReplaceDialog();
   });
 
-  $('#cancel-edit').on('click', () => modal.remove());
+  $('#cancel-edit').on('click', () => {
+    modal.remove();
+
+    // 如果来自比较界面，重新显示比较模态框
+    if (fromCompare) {
+      const compareModal = $('#compare-modal');
+      if (compareModal.length) {
+        compareModal.show();
+      }
+    }
+  });
 
   // 添加提示信息，告知用户只能通过取消按钮关闭
   console.log('编辑/新建界面已打开，只能通过点击"取消"按钮关闭，避免误触');
@@ -5316,46 +5332,40 @@ function bindEditModalEvents(
 // 显示单个条目的查找替换对话框
 function showFindReplaceDialog() {
   const $ = getJQuery();
-  const isDark = isDarkTheme();
-  const bgColor = isDark ? '#1a1a1a' : '#ffffff';
-  const textColor = isDark ? '#e0e0e0' : '#374151';
-  const borderColor = isDark ? '#374151' : '#e5e7eb';
-  const inputBg = isDark ? '#2d2d2d' : '#ffffff';
-  const inputBorder = isDark ? '#4b5563' : '#d1d5db';
+  // 使用公共样式管理器 - 查找替换模态框简化完成喵~
+  const vars = CommonStyles.getVars();
 
   // 移除已存在的对话框
   $('#find-replace-modal').remove();
 
   const modalHtml = `
-    <div id="find-replace-modal" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10003; display: flex; align-items: center; justify-content: center; padding: 20px;">
-      <div style="background: ${bgColor}; border-radius: 16px; padding: 24px; max-width: 500px; width: 100%; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
-        <div style="text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid ${borderColor};">
-          <h3 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700;">🔍 替换</h3>
-          <p style="margin: 0; font-size: 14px; color: ${
-            isDark ? '#9ca3af' : '#6b7280'
-          };">在当前条目内容中查找并替换文本</p>
+    <div id="find-replace-modal" style="--pt-font-size: ${vars.fontSize}; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10003; display: flex; align-items: center; justify-content: center; padding: ${vars.margin};">
+      <div style="background: ${vars.bgColor}; border-radius: ${vars.borderRadius}; padding: ${vars.padding}; max-width: 500px; width: 100%; color: ${vars.textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
+        <div style="text-align: center; margin-bottom: ${vars.margin}; padding-bottom: ${vars.paddingSmall}; border-bottom: 1px solid ${vars.borderColor};">
+          <h3 style="margin: 0 0 8px 0; font-size: ${vars.fontSizeLarge}; font-weight: 700;">🔍 替换</h3>
+          <p style="margin: 0; font-size: ${vars.fontSizeMedium}; color: ${vars.tipColor};">在当前条目内容中查找并替换文本</p>
         </div>
 
-        <div style="margin-bottom: 20px;">
-          <div style="margin-bottom: 16px;">
-            <label style="display: block; margin-bottom: 8px; font-weight: 500;">查找文本</label>
-            <input type="text" id="single-find" placeholder="要查找的文本" style="width: 100%; padding: 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; box-sizing: border-box; font-size: 14px;">
+        <div style="margin-bottom: ${vars.margin};">
+          <div style="margin-bottom: ${vars.paddingSmall};">
+            <label style="display: block; margin-bottom: 8px; font-weight: 500; font-size: ${vars.fontSizeMedium};">查找文本</label>
+            <input type="text" id="single-find" placeholder="要查找的文本" style="width: 100%; padding: ${vars.paddingSmall}; background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder}; border-radius: 6px; box-sizing: border-box; font-size: ${vars.fontSizeMedium};">
           </div>
-          <div style="margin-bottom: 16px;">
-            <label style="display: block; margin-bottom: 8px; font-weight: 500;">替换为</label>
-            <input type="text" id="single-replace" placeholder="替换后的文本" style="width: 100%; padding: 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; box-sizing: border-box; font-size: 14px;">
+          <div style="margin-bottom: ${vars.paddingSmall};">
+            <label style="display: block; margin-bottom: 8px; font-weight: 500; font-size: ${vars.fontSizeMedium};">替换为</label>
+            <input type="text" id="single-replace" placeholder="替换后的文本" style="width: 100%; padding: ${vars.paddingSmall}; background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder}; border-radius: 6px; box-sizing: border-box; font-size: ${vars.fontSizeMedium};">
           </div>
-          <div style="margin-bottom: 16px;">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer;">
+          <div style="margin-bottom: ${vars.paddingSmall};">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: ${vars.fontSizeMedium}; cursor: pointer;">
               <input type="checkbox" id="case-sensitive">
               区分大小写
             </label>
           </div>
         </div>
 
-        <div style="display: flex; gap: 12px; justify-content: center;">
-          <button id="apply-find-replace" style="padding: 12px 24px; background: #059669; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">✅ 替换</button>
-          <button id="cancel-find-replace" style="padding: 12px 24px; background: #6b7280; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">❌ 取消</button>
+        <div style="display: flex; gap: ${vars.gap}; justify-content: center;">
+          <button id="apply-find-replace" style="padding: ${vars.buttonPadding}; background: #059669; color: white; border: none; border-radius: ${vars.buttonRadius}; font-size: ${vars.fontSizeMedium}; font-weight: 600; cursor: pointer;">✅ 替换</button>
+          <button id="cancel-find-replace" style="padding: ${vars.buttonPadding}; background: #6b7280; color: white; border: none; border-radius: ${vars.buttonRadius}; font-size: ${vars.fontSizeMedium}; font-weight: 600; cursor: pointer;">❌ 取消</button>
         </div>
       </div>
     </div>
@@ -5811,10 +5821,16 @@ function showAILoading(show, message = 'AI 正在思考...') {
   const $ = getJQuery();
   $('#ai-loading-overlay').remove();
   if (show) {
+    // 获取当前字体大小设置
+    const savedSize = localStorage.getItem('preset-transfer-font-size');
+    const currentFontSize = savedSize ? parseInt(savedSize) : 16;
+
     const overlayHtml = `
-      <div id="ai-loading-overlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 10005; display: flex; align-items: center; justify-content: center; color: white; flex-direction: column; gap: 20px;">
+      <div id="ai-loading-overlay" style="--pt-font-size: ${
+        CommonStyles.getVars().fontSize
+      }; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 10005; display: flex; align-items: center; justify-content: center; color: white; flex-direction: column; gap: 20px;">
         <div class="spinner" style="border: 4px solid rgba(255, 255, 255, 0.3); border-left-color: #fff; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite;"></div>
-        <div class="message" style="font-size: 18px; font-weight: 500;">${message}</div>
+        <div class="message" style="font-size: calc(var(--pt-font-size) * 1.125); font-weight: 500;">${message}</div>
       </div>
       <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
     `;
@@ -6205,32 +6221,25 @@ const BatchEditor = {
   // 显示批量编辑对话框
   showBatchEditDialog(selectedEntries, onApply) {
     const $ = getJQuery();
-    const isDark = isDarkTheme();
-    const bgColor = isDark ? '#1a1a1a' : '#ffffff';
-    const textColor = isDark ? '#e0e0e0' : '#374151';
-    const borderColor = isDark ? '#374151' : '#e5e7eb';
-    const inputBg = isDark ? '#2d2d2d' : '#ffffff';
-    const inputBorder = isDark ? '#4b5563' : '#d1d5db';
+    const vars = CommonStyles.getVars();
 
     // 移除已存在的对话框
     $('#batch-edit-modal').remove();
 
     const modalHtml = `
-      <div id="batch-edit-modal" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10002; display: flex; align-items: center; justify-content: center; padding: 20px;">
-        <div style="background: ${bgColor}; border-radius: 16px; padding: 24px; max-width: 600px; width: 100%; max-height: 80vh; overflow-y: auto; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
-          <div style="text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid ${borderColor};">
-            <h3 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700;">🔧 批量编辑条目</h3>
-            <p style="margin: 0; font-size: 14px; color: ${isDark ? '#9ca3af' : '#6b7280'};">选中了 ${
-      selectedEntries.length
-    } 个条目</p>
+      <div id="batch-edit-modal" style="--pt-font-size: ${vars.fontSize}; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10002; display: flex; align-items: center; justify-content: center; padding: ${vars.margin};">
+        <div style="background: ${vars.bgColor}; border-radius: ${vars.borderRadius}; padding: ${vars.padding}; max-width: 600px; width: 100%; max-height: ${vars.maxHeight}; overflow-y: auto; color: ${vars.textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
+          <div style="text-align: center; margin-bottom: ${vars.margin}; padding-bottom: ${vars.paddingSmall}; border-bottom: 1px solid ${vars.borderColor};">
+            <h3 style="margin: 0 0 8px 0; font-size: ${vars.fontSizeLarge}; font-weight: 700;">🔧 批量编辑条目</h3>
+            <p style="margin: 0; font-size: ${vars.fontSizeMedium}; color: ${vars.tipColor};">选中了 ${selectedEntries.length} 个条目</p>
           </div>
 
           <div style="margin-bottom: 20px;">
-            <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600;">📝 基础属性</h4>
+            <h4 style="margin: 0 0 12px 0; font-size: var(--pt-font-size); font-weight: 600;">📝 基础属性</h4>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
               <div>
-                <label style="display: block; margin-bottom: 8px; font-weight: 500;">角色类型</label>
-                <select id="batch-role" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px;">
+                <label style="display: block; margin-bottom: 8px; font-weight: 500; font-size: ${vars.fontSizeMedium};">角色类型</label>
+                <select id="batch-role" style="width: 100%; padding: 8px 12px; background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder}; border-radius: 6px; font-size: ${vars.fontSizeMedium};">
                   <option value="">不修改</option>
                   <option value="system">System</option>
                   <option value="user">User</option>
@@ -6238,13 +6247,13 @@ const BatchEditor = {
                 </select>
               </div>
               <div>
-                <label style="display: block; margin-bottom: 8px; font-weight: 500;">注入深度</label>
-                <input type="number" id="batch-depth" placeholder="不修改" min="0" max="100" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; box-sizing: border-box;">
+                <label style="display: block; margin-bottom: 8px; font-weight: 500; font-size: ${vars.fontSizeMedium};">注入深度</label>
+                <input type="number" id="batch-depth" placeholder="不修改" min="0" max="100" style="width: 100%; padding: 8px 12px; background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder}; border-radius: 6px; box-sizing: border-box; font-size: ${vars.fontSizeMedium};">
               </div>
             </div>
             <div>
-              <label style="display: block; margin-bottom: 8px; font-weight: 500;">启用状态</label>
-              <select id="batch-enabled" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px;">
+              <label style="display: block; margin-bottom: 8px; font-weight: 500; font-size: ${vars.fontSizeMedium};">启用状态</label>
+              <select id="batch-enabled" style="width: 100%; padding: 8px 12px; background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder}; border-radius: 6px; font-size: ${vars.fontSizeMedium};">
                 <option value="">不修改</option>
                 <option value="true">启用</option>
                 <option value="false">禁用</option>
@@ -6253,27 +6262,27 @@ const BatchEditor = {
           </div>
 
           <div style="margin-bottom: 20px;">
-            <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600;">✏️ 内容编辑</h4>
+            <h4 style="margin: 0 0 12px 0; font-size: var(--pt-font-size); font-weight: 600;">✏️ 内容编辑</h4>
             <div style="margin-bottom: 16px;">
-              <label style="display: block; margin-bottom: 8px; font-weight: 500;">添加前缀</label>
-              <textarea id="batch-prefix" placeholder="在所有条目内容前添加..." rows="2" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; resize: vertical; box-sizing: border-box;"></textarea>
+              <label style="display: block; margin-bottom: 8px; font-weight: 500; font-size: ${vars.fontSizeMedium};">添加前缀</label>
+              <textarea id="batch-prefix" placeholder="在所有条目内容前添加..." rows="2" style="width: 100%; padding: 8px 12px; background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder}; border-radius: 6px; resize: vertical; box-sizing: border-box; font-size: ${vars.fontSizeMedium};"></textarea>
             </div>
             <div style="margin-bottom: 16px;">
-              <label style="display: block; margin-bottom: 8px; font-weight: 500;">添加后缀</label>
-              <textarea id="batch-suffix" placeholder="在所有条目内容后添加..." rows="2" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; resize: vertical; box-sizing: border-box;"></textarea>
+              <label style="display: block; margin-bottom: 8px; font-weight: 500; font-size: ${vars.fontSizeMedium};">添加后缀</label>
+              <textarea id="batch-suffix" placeholder="在所有条目内容后添加..." rows="2" style="width: 100%; padding: 8px 12px; background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder}; border-radius: 6px; resize: vertical; box-sizing: border-box; font-size: ${vars.fontSizeMedium};"></textarea>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
               <div>
-                <label style="display: block; margin-bottom: 8px; font-weight: 500;">查找文本</label>
-                <input type="text" id="batch-find" placeholder="要替换的文本" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; box-sizing: border-box;">
+                <label style="display: block; margin-bottom: 8px; font-weight: 500; font-size: ${vars.fontSizeMedium};">查找文本</label>
+                <input type="text" id="batch-find" placeholder="要替换的文本" style="width: 100%; padding: 8px 12px; background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder}; border-radius: 6px; box-sizing: border-box; font-size: ${vars.fontSizeMedium};">
               </div>
               <div>
-                <label style="display: block; margin-bottom: 8px; font-weight: 500;">替换为</label>
-                <input type="text" id="batch-replace" placeholder="替换后的文本" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; box-sizing: border-box;">
+                <label style="display: block; margin-bottom: 8px; font-weight: 500; font-size: ${vars.fontSizeMedium};">替换为</label>
+                <input type="text" id="batch-replace" placeholder="替换后的文本" style="width: 100%; padding: 8px 12px; background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder}; border-radius: 6px; box-sizing: border-box; font-size: ${vars.fontSizeMedium};">
               </div>
             </div>
             <div style="margin-top: 8px;">
-              <label style="display: flex; align-items: center; gap: 8px; font-size: 14px;">
+              <label style="display: flex; align-items: center; gap: 8px; font-size: ${vars.fontSizeMedium};">
                 <input type="checkbox" id="batch-case-sensitive">
                 区分大小写
               </label>
@@ -6281,19 +6290,19 @@ const BatchEditor = {
           </div>
 
           <div style="margin-bottom: 20px;">
-            <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600;">🏷️ 批量重命名</h4>
+            <h4 style="margin: 0 0 12px 0; font-size: var(--pt-font-size); font-weight: 600;">🏷️ 批量重命名</h4>
             <div>
-              <label style="display: block; margin-bottom: 8px; font-weight: 500;">重命名模式</label>
-              <input type="text" id="batch-rename-pattern" placeholder="例如: {original}_修改版 或 条目{index}" style="width: 100%; padding: 8px 12px; background: ${inputBg}; color: ${textColor}; border: 1px solid ${inputBorder}; border-radius: 6px; box-sizing: border-box;">
-              <div style="margin-top: 4px; font-size: 12px; color: ${isDark ? '#9ca3af' : '#6b7280'};">
+              <label style="display: block; margin-bottom: 8px; font-weight: 500; font-size: ${vars.fontSizeMedium};">重命名模式</label>
+              <input type="text" id="batch-rename-pattern" placeholder="例如: {original}_修改版 或 条目{index}" style="width: 100%; padding: 8px 12px; background: ${vars.inputBg}; color: ${vars.textColor}; border: 1px solid ${vars.inputBorder}; border-radius: 6px; box-sizing: border-box; font-size: ${vars.fontSizeMedium};">
+              <div style="margin-top: 4px; font-size: ${vars.fontSizeSmall}; color: ${vars.tipColor};">
                 可用变量: {original}=原名称, {index}=序号, {role}=角色, {depth}=深度
               </div>
             </div>
           </div>
 
           <div style="display: flex; gap: 12px; justify-content: center;">
-            <button id="apply-batch-edit" style="padding: 12px 24px; background: #059669; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">✅ 应用修改</button>
-            <button id="cancel-batch-edit" style="padding: 12px 24px; background: #6b7280; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">❌ 取消</button>
+            <button id="apply-batch-edit" style="padding: 12px 24px; background: #059669; color: white; border: none; border-radius: 8px; font-size: ${vars.fontSizeMedium}; font-weight: 600; cursor: pointer;">✅ 应用修改</button>
+            <button id="cancel-batch-edit" style="padding: 12px 24px; background: #6b7280; color: white; border: none; border-radius: 8px; font-size: ${vars.fontSizeMedium}; font-weight: 600; cursor: pointer;">❌ 取消</button>
           </div>
         </div>
       </div>
@@ -6422,17 +6431,13 @@ const QuickPreview = {
 
   // 渲染可见范围内的条目
   renderVisibleEntries(virtualData, scrollTop, isDark = false) {
+    const vars = CommonStyles.getVars();
     const { entries, itemHeight, visibleCount, renderBuffer } = virtualData;
     const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - renderBuffer);
     const endIndex = Math.min(entries.length, startIndex + visibleCount + renderBuffer * 2);
 
     const visibleEntries = entries.slice(startIndex, endIndex);
     const offsetTop = startIndex * itemHeight;
-
-    const itemBg = isDark ? '#1f2937' : '#ffffff';
-    const borderColor = isDark ? '#374151' : '#e5e7eb';
-    const titleColor = isDark ? '#f3f4f6' : '#374151';
-    const metaColor = isDark ? '#9ca3af' : '#6b7280';
 
     return {
       html: visibleEntries
@@ -6454,16 +6459,20 @@ const QuickPreview = {
             right: 0;
             height: ${itemHeight - 10}px;
             padding: 8px;
-            border-bottom: 1px solid ${borderColor};
-            background: ${itemBg};
+            border-bottom: 1px solid ${vars.borderColor};
+            background: ${vars.subBg};
           ">
-            <div style="font-weight: 600; margin-bottom: 4px; color: ${titleColor};">
+            <div style="font-weight: 600; margin-bottom: 4px; color: ${vars.textColor}; font-size: ${
+            vars.fontSizeMedium
+          };">
               ${roleIcon} ${safeName}
-              <span style="font-size: 12px; color: ${metaColor};">(${entry.injection_position || 'relative'}:${
-            entry.injection_depth ?? 4
-          })</span>
+              <span style="font-size: ${vars.fontSizeSmall}; color: ${vars.tipColor};">(${
+            entry.injection_position || 'relative'
+          }:${entry.injection_depth ?? 4})</span>
             </div>
-            <div style="font-size: 12px; color: ${metaColor}; font-family: 'Courier New', monospace; white-space: pre-wrap; overflow: hidden; max-height: 80px;">${safePreview}</div>
+            <div style="font-size: ${vars.fontSizeSmall}; color: ${
+            vars.tipColor
+          }; font-family: 'Courier New', monospace; white-space: pre-wrap; overflow: hidden; max-height: 80px;">${safePreview}</div>
           </div>
         `;
         })
@@ -6517,11 +6526,7 @@ const QuickPreview = {
   // 显示预览界面
   showPreviewModal(apiInfo, presetName) {
     const $ = getJQuery();
-    const isDark = isDarkTheme();
-    const bgColor = isDark ? '#1a1a1a' : '#ffffff';
-    const textColor = isDark ? '#e0e0e0' : '#374151';
-    const borderColor = isDark ? '#374151' : '#e5e7eb';
-    const sectionBg = isDark ? '#262626' : '#f9fafb';
+    const vars = CommonStyles.getVars();
 
     try {
       const presetData = getPresetDataFromManager(apiInfo, presetName);
@@ -6531,20 +6536,40 @@ const QuickPreview = {
       $('#preview-modal').remove();
 
       const modalHtml = `
-        <div id="preview-modal" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10004; display: flex; align-items: center; justify-content: center; padding: 20px;">
-          <div style="background: ${bgColor}; border-radius: 16px; padding: 24px; max-width: 800px; width: 100%; max-height: 80vh; overflow-y: auto; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
-            <div style="text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid ${borderColor};">
-              <h3 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700;">📋 预设预览 - ${presetName}</h3>
+        <div id="preview-modal" style="--pt-font-size: ${
+          vars.fontSize
+        }; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10004; display: flex; align-items: center; justify-content: center; padding: ${
+        vars.margin
+      };">
+          <div style="background: ${vars.bgColor}; border-radius: ${vars.borderRadius}; padding: ${
+        vars.padding
+      }; max-width: 800px; width: 100%; max-height: ${vars.maxHeight}; overflow-y: auto; color: ${
+        vars.textColor
+      }; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
+            <div style="text-align: center; margin-bottom: ${vars.margin}; padding-bottom: ${
+        vars.paddingSmall
+      }; border-bottom: 1px solid ${vars.borderColor};">
+              <h3 style="margin: 0 0 8px 0; font-size: ${
+                vars.fontSizeLarge
+              }; font-weight: 700;">📋 预设预览 - ${presetName}</h3>
             </div>
 
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px;">
-              <div style="padding: 16px; background: ${sectionBg}; border-radius: 8px; text-align: center;">
-                <div style="font-size: 24px; font-weight: 700; color: #059669;">${preview.totalEntries}</div>
-                <div style="font-size: 14px; color: ${isDark ? '#9ca3af' : '#6b7280'};">启用条目数</div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: ${
+              vars.paddingSmall
+            }; margin-bottom: ${vars.margin};">
+              <div style="padding: ${vars.paddingSmall}; background: ${vars.sectionBg}; border-radius: ${
+        vars.borderRadiusSmall
+      }; text-align: center;">
+                <div style="font-size: calc(var(--pt-font-size) * 1.5); font-weight: 700; color: #059669;">${
+                  preview.totalEntries
+                }</div>
+                <div style="font-size: calc(var(--pt-font-size) * 0.875); color: ${vars.tipColor};">启用条目数</div>
               </div>
-              <div style="padding: 16px; background: ${sectionBg}; border-radius: 8px; text-align: center;">
-                <div style="font-size: 24px; font-weight: 700; color: #3b82f6;">${preview.totalTokens}</div>
-                <div style="font-size: 14px; color: ${isDark ? '#9ca3af' : '#6b7280'};">预估Token</div>
+              <div style="padding: 16px; background: ${vars.sectionBg}; border-radius: 8px; text-align: center;">
+                <div style="font-size: calc(var(--pt-font-size) * 1.5); font-weight: 700; color: #3b82f6;">${
+                  preview.totalTokens
+                }</div>
+                <div style="font-size: ${vars.fontSizeMedium}; color: ${vars.tipColor};">预估Token</div>
               </div>
             </div>
 
@@ -6552,7 +6577,7 @@ const QuickPreview = {
               preview.warnings.length > 0
                 ? `
               <div style="margin-bottom: 20px; padding: 16px; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px;">
-                <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: #92400e;">⚠️ 注意事项</h4>
+                <h4 style="margin: 0 0 12px 0; font-size: var(--pt-font-size); font-weight: 600; color: #92400e;">⚠️ 注意事项</h4>
                 ${preview.warnings
                   .map(warning => `<div style="color: #92400e; margin-bottom: 4px;">• ${warning}</div>`)
                   .join('')}
@@ -6562,10 +6587,10 @@ const QuickPreview = {
             }
 
             <div style="margin-bottom: 20px;">
-              <h4 style="margin: 0 0 12px 0; font-size: 16px; font-weight: 600;">📝 所有条目预览 (虚拟滚动)</h4>
+              <h4 style="margin: 0 0 12px 0; font-size: var(--pt-font-size); font-weight: 600;">📝 所有条目预览 (虚拟滚动)</h4>
               <div id="virtual-scroll-container" style="
-                background: ${sectionBg};
-                border: 1px solid ${borderColor};
+                background: ${vars.sectionBg};
+                border: 1px solid ${vars.borderColor};
                 border-radius: 8px;
                 height: 400px;
                 overflow-y: auto;
@@ -6575,8 +6600,12 @@ const QuickPreview = {
               </div>
             </div>
 
-            <div style="display: flex; gap: 12px; justify-content: center;">
-              <button id="close-preview" style="padding: 12px 24px; background: #6b7280; color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">关闭</button>
+            <div style="display: flex; gap: ${vars.gap}; justify-content: center;">
+              <button id="close-preview" style="padding: ${
+                vars.buttonPadding
+              }; background: #6b7280; color: white; border: none; border-radius: ${vars.buttonRadius}; font-size: ${
+        vars.fontSizeMedium
+      }; font-weight: 600; cursor: pointer;">关闭</button>
             </div>
           </div>
         </div>
@@ -6594,7 +6623,7 @@ const QuickPreview = {
       $content.css('height', virtualData.totalHeight + 'px');
 
       // 初始渲染
-      const initialRender = this.renderVisibleEntries(virtualData, 0, isDark);
+      const initialRender = this.renderVisibleEntries(virtualData, 0, false);
       $content.html(initialRender.html);
 
       // 滚动事件处理（添加节流）
@@ -6610,7 +6639,7 @@ const QuickPreview = {
 
           // 只有当起始索引变化时才重新渲染
           if (newStartIndex !== lastStartIndex) {
-            const renderResult = this.renderVisibleEntries(virtualData, scrollTop, isDark);
+            const renderResult = this.renderVisibleEntries(virtualData, scrollTop, false);
             $content.html(renderResult.html);
             lastStartIndex = newStartIndex;
           }
@@ -6715,27 +6744,22 @@ const ImportExportEnhancer = {
   // 显示导出选项对话框
   showExportDialog(selectedEntries) {
     const $ = getJQuery();
-    const isDark = isDarkTheme();
-    const bgColor = isDark ? '#1a1a1a' : '#ffffff';
-    const textColor = isDark ? '#e0e0e0' : '#374151';
-    const borderColor = isDark ? '#374151' : '#e5e7eb';
-    const inputBg = isDark ? '#2d2d2d' : '#ffffff';
-    const inputBorder = isDark ? '#4b5563' : '#d1d5db';
+    const vars = CommonStyles.getVars();
 
     // 移除已存在的对话框
     $('#export-dialog').remove();
 
     const dialogHtml = `
-      <div id="export-dialog" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10003; display: flex; align-items: center; justify-content: center; padding: 20px;">
-        <div style="background: ${bgColor}; border-radius: 16px; padding: 24px; max-width: 400px; width: 100%; color: ${textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
-          <div style="text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid ${borderColor};">
-            <h3 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700;">📤 导出条目</h3>
-            <p style="margin: 0; font-size: 14px; color: ${isDark ? '#9ca3af' : '#6b7280'};">选择导出格式</p>
+      <div id="export-dialog" style="--pt-font-size: ${vars.fontSize}; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10003; display: flex; align-items: center; justify-content: center; padding: 20px;">
+        <div style="background: ${vars.bgColor}; border-radius: 16px; padding: 24px; max-width: 400px; width: 100%; color: ${vars.textColor}; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
+          <div style="text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid ${vars.borderColor};">
+            <h3 style="margin: 0 0 8px 0; font-size: calc(var(--pt-font-size) * 1.25); font-weight: 700;">📤 导出条目</h3>
+            <p style="margin: 0; font-size: calc(var(--pt-font-size) * 0.875); color: ${vars.tipColor};">选择导出格式</p>
           </div>
 
           <div style="margin-bottom: 20px;">
-            <label style="display: block; margin-bottom: 8px; font-weight: 600; font-size: 14px;">导出格式:</label>
-            <select id="export-format" style="width: 100%; padding: 12px; border: 1px solid ${inputBorder}; border-radius: 8px; background: ${inputBg}; color: ${textColor}; font-size: 14px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: 600; font-size: ${vars.fontSizeMedium};">导出格式:</label>
+            <select id="export-format" style="width: 100%; padding: 12px; border: 1px solid ${vars.inputBorder}; border-radius: 8px; background: ${vars.inputBg}; color: ${vars.textColor}; font-size: ${vars.fontSizeMedium};">
               <option value="json">JSON 格式 (.json)</option>
               <option value="csv">CSV 表格 (.csv)</option>
               <option value="txt">纯文本 (.txt)</option>
@@ -6743,8 +6767,8 @@ const ImportExportEnhancer = {
           </div>
 
           <div style="display: flex; gap: 12px; justify-content: center;">
-            <button id="confirm-export" style="background: #059669; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px;">确认导出</button>
-            <button id="cancel-export" style="background: #9ca3af; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px;">取消</button>
+            <button id="confirm-export" style="background: #059669; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: ${vars.fontSizeMedium};">确认导出</button>
+            <button id="cancel-export" style="background: #9ca3af; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: ${vars.fontSizeMedium};">取消</button>
           </div>
         </div>
       </div>
@@ -6878,11 +6902,7 @@ const ImportExportEnhancer = {
   async showInsertPositionDialog(targetPreset) {
     return new Promise(resolve => {
       const $ = getJQuery();
-      const isDark = isDarkTheme();
-      const bgColor = isDark ? '#1a1a1a' : '#ffffff';
-      const textColor = isDark ? '#e0e0e0' : '#374151';
-      const borderColor = isDark ? '#374151' : '#e5e7eb';
-      const sectionBg = isDark ? '#262626' : '#f9fafb';
+      const vars = CommonStyles.getVars();
 
       const options = getTargetPromptsList(targetPreset, 'include_disabled') || [];
       const selectOptions = options
@@ -6892,29 +6912,39 @@ const ImportExportEnhancer = {
       $('#import-position-modal').remove();
 
       const html = `
-       <div id="import-position-modal" style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(8px); z-index: 10006; display: flex; align-items: center; justify-content: center; padding: 20px;">
-         <div style="background: ${bgColor}; color: ${textColor}; border-radius: 16px; padding: 20px; width: 100%; max-width: 520px; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
-           <div style="margin-bottom: 12px; border-bottom: 1px solid ${borderColor}; padding-bottom: 8px;">
-             <h3 style="margin: 0; font-weight: 700; font-size: 18px;">选择导入条目插入位置</h3>
-             <div style="font-size: 12px; color: ${
-               isDark ? '#9ca3af' : '#6b7280'
+       <div id="import-position-modal" style="--pt-font-size: ${
+         vars.fontSize
+       }; position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(8px); z-index: 10006; display: flex; align-items: center; justify-content: center; padding: 20px;">
+         <div style="background: ${vars.bgColor}; color: ${
+        vars.textColor
+      }; border-radius: 16px; padding: 20px; width: 100%; max-width: 520px; box-shadow: 0 20px 40px rgba(0,0,0,0.1);">
+           <div style="margin-bottom: 12px; border-bottom: 1px solid ${vars.borderColor}; padding-bottom: 8px;">
+             <h3 style="margin: 0; font-weight: 700; font-size: calc(var(--pt-font-size) * 1.125);">选择导入条目插入位置</h3>
+             <div style="font-size: calc(var(--pt-font-size) * 0.75); color: ${
+               vars.tipColor
              }; margin-top: 4px;">目标预设：${targetPreset}</div>
            </div>
-           <div style="display: grid; gap: 10px; background: ${sectionBg}; border: 1px solid ${borderColor}; border-radius: 8px; padding: 12px;">
+           <div style="display: grid; gap: 10px; background: ${vars.sectionBg}; border: 1px solid ${
+        vars.borderColor
+      }; border-radius: 8px; padding: 12px;">
              <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="pos" value="top"> 插入到顶部</label>
              <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="pos" value="bottom" checked> 插入到底部</label>
              <label style="display:flex;align-items:center;gap:8px;">
                <input type="radio" name="pos" value="after"> 插入到以下条目之后
              </label>
-             <select id="import-after-select" style="width:100%; padding: 8px 12px; border:1px solid ${borderColor}; border-radius: 6px;" ${
-        options.length ? '' : 'disabled'
-      }>
+             <select id="import-after-select" style="width:100%; padding: 8px 12px; border:1px solid ${
+               vars.borderColor
+             }; border-radius: 6px;" ${options.length ? '' : 'disabled'}>
                ${selectOptions || '<option value="-1" disabled>(无可选条目)</option>'}
              </select>
            </div>
            <div style="display:flex; gap:10px; justify-content:center; margin-top: 14px;">
-             <button id="import-pos-ok" style="padding:8px 16px; border:none; border-radius:8px; background:#059669; color:#fff; font-weight:600;">确定</button>
-             <button id="import-pos-cancel" style="padding:8px 16px; border:none; border-radius:8px; background:#6b7280; color:#fff; font-weight:600;">取消</button>
+             <button id="import-pos-ok" style="padding:8px 16px; border:none; border-radius:8px; background:#059669; color:#fff; font-weight:600; font-size: ${
+               vars.fontSizeMedium
+             };">确定</button>
+             <button id="import-pos-cancel" style="padding:8px 16px; border:none; border-radius:8px; background:#6b7280; color:#fff; font-weight:600; font-size: ${
+               vars.fontSizeMedium
+             };">取消</button>
            </div>
          </div>
        </div>
@@ -7114,6 +7144,18 @@ try {
     }
   }
   waitForExtensionsMenu();
+
+  // 注入原生页面的正则折叠面板
+  try {
+    initNativeRegexPanelIntegration();
+  } catch (e) {
+    console.warn('注入原生正则面板失败，将稍后重试');
+    setTimeout(() => {
+      try {
+        initNativeRegexPanelIntegration();
+      } catch (_) {}
+    }, 1500);
+  }
 
   // 启动全局预设监听器（在脚本加载时就启动，不需要等用户打开界面）
   try {
