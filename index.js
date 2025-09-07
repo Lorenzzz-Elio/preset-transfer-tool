@@ -1,6 +1,6 @@
 // @ts-nocheck
 // Author: discord千秋梦
-// Version: v1.9
+// Version: v1.91
 
 // 性能优化工具函数
 function debounce(func, wait) {
@@ -899,6 +899,9 @@ function ensureAllEntriesHaveNewFields(entries) {
 
 // ==================== 正则绑定功能 ====================
 
+// 正则绑定开关 - 控制是否在预设切换时自动切换正则
+let regexBindingEnabled = localStorage.getItem('preset-transfer-regex-binding-enabled') !== 'false';
+
 // 正则绑定配置的数据结构
 const REGEX_BINDING_TYPES = {
   GLOBAL: 'global', // 全局正则，永不禁用
@@ -1248,8 +1251,10 @@ let globalPresetListener = {
       this.switchInProgress = true;
       this.currentPreset = toPreset;
 
-      // 执行正则切换
-      await switchPresetRegexes(fromPreset, toPreset);
+      // 检查正则绑定开关，只有开启时才执行正则切换
+      if (regexBindingEnabled) {
+        await switchPresetRegexes(fromPreset, toPreset);
+      }
 
       // 更新工具界面与原生折叠面板状态（如果已存在）
       if (toPreset) {
@@ -1439,6 +1444,9 @@ function ensureNativeRegexPanelInjected() {
         <button id="st-regex-toggle" class="menu_button" title="展开/折叠">▶</button>
         <span class="title">正则绑定</span>
         <div style="flex:1;"></div>
+        <button id="regex-binding-switch" class="menu_button" title="开启/关闭正则绑定功能">${
+          regexBindingEnabled ? '●' : '○'
+        }</button>
       </div>
       <div class="content" style="display:none; max-height:50vh; overflow:auto; padding:10px;">
         <div id="st-regex-binding-status" style="opacity: .9;">加载中...</div>
@@ -1613,6 +1621,18 @@ function bindNativeRegexPanelEvents() {
         }
       }
     });
+
+  // 正则绑定开关按钮事件
+  $('#regex-binding-switch')
+    .off('click')
+    .on('click', function () {
+      regexBindingEnabled = !regexBindingEnabled;
+      localStorage.setItem('preset-transfer-regex-binding-enabled', regexBindingEnabled);
+      $(this).text(regexBindingEnabled ? '●' : '○');
+      if (window.toastr) {
+        toastr.info(`正则绑定功能已${regexBindingEnabled ? '开启' : '关闭'}`);
+      }
+    });
 }
 
 function updateNativeRegexPanel(presetName) {
@@ -1624,6 +1644,9 @@ function updateNativeRegexPanel(presetName) {
     const bindings = getPresetRegexBindings(presetName);
     const count = Array.isArray(bindings.exclusive) ? bindings.exclusive.length : 0;
     panel.find('#st-regex-binding-status').text(`预设: ${presetName}（已绑定 ${count} 个专属正则）`);
+
+    // 更新开关按钮状态
+    panel.find('#regex-binding-switch').text(regexBindingEnabled ? '●' : '○');
   } catch (e) {
     console.warn('更新原生正则面板失败:', e);
   }
@@ -1886,7 +1909,7 @@ function createTransferUI() {
                         <span id="font-size-display">16px</span>
                     </div>
                     <div class="version-info">
-                        <span class="author">V1.9 by discord千秋梦</span>
+                        <span class="author">V1.91 by discord千秋梦</span>
                     </div>
                 </div>
                 <div class="preset-selection">
@@ -4031,6 +4054,7 @@ function showConfirmDialog(message, onConfirm) {
   // 获取当前字体大小设置
   const savedSize = localStorage.getItem('preset-transfer-font-size');
   const currentFontSize = savedSize ? parseInt(savedSize) : 16;
+  const vars = CommonStyles.getVars();
 
   const modalHtml = `
     <div id="confirm-dialog-modal" style="--pt-font-size: ${
