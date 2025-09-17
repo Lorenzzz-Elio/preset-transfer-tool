@@ -1,6 +1,6 @@
 // @ts-nocheck
 // Author: discord千秋梦
-// Version: v1.91
+// Version: v1.92
 
 // 性能优化工具函数
 function debounce(func, wait) {
@@ -926,17 +926,62 @@ function getPresetRegexBindings(presetName) {
   }
 }
 
-// 保存预设的正则绑定配置（改用 PT.API 兼容层）
+// 最小化清理预设数据 - 只移除明显的无效元素，保护数据完整性
+function minimalCleanPresetData(preset) {
+  const cleaned = JSON.parse(JSON.stringify(preset));
+
+  // 只移除明显的 null/undefined 元素，不检查 identifier
+  if (cleaned.prompts && Array.isArray(cleaned.prompts)) {
+    cleaned.prompts = cleaned.prompts.filter(prompt => prompt != null);
+  }
+
+  // 只移除 null/undefined 的 orderGroup 和 orderItem
+  if (cleaned.prompt_order && Array.isArray(cleaned.prompt_order)) {
+    cleaned.prompt_order = cleaned.prompt_order
+      .filter(orderGroup => orderGroup != null)
+      .map(orderGroup => {
+        if (orderGroup && orderGroup.order && Array.isArray(orderGroup.order)) {
+          return {
+            ...orderGroup,
+            order: orderGroup.order.filter(orderItem => orderItem != null),
+          };
+        }
+        return orderGroup;
+      });
+  }
+
+  return cleaned;
+}
+
+// 保存预设的正则绑定配置（改用 PT.API 兼容层）- 渐进式错误处理
 async function savePresetRegexBindings(presetName, bindings) {
   try {
     const preset = PT.API.getPreset(presetName);
     if (!preset) throw new Error(`预设 "${presetName}" 不存在`);
+
+    // 设置正则绑定
     if (!preset.extensions) preset.extensions = {};
     preset.extensions.regexBindings = {
       exclusive: Array.isArray(bindings.exclusive) ? bindings.exclusive : [],
     };
-    await PT.API.replacePreset(presetName, preset);
-    return true;
+
+    try {
+      // 首先尝试直接保存（最安全，不修改任何数据）
+      await PT.API.replacePreset(presetName, preset);
+      return true;
+    } catch (firstError) {
+      console.warn('直接保存失败，尝试最小化清理数据:', firstError);
+
+      // 只在失败时才进行最小化清理，保护数据完整性
+      const cleanPreset = minimalCleanPresetData(preset);
+      cleanPreset.extensions.regexBindings = {
+        exclusive: Array.isArray(bindings.exclusive) ? bindings.exclusive : [],
+      };
+
+      await PT.API.replacePreset(presetName, cleanPreset);
+      console.log('使用清理后的数据保存成功');
+      return true;
+    }
   } catch (error) {
     console.error(`保存预设 "${presetName}" 的正则绑定配置失败:`, error);
     return false;
@@ -1909,7 +1954,7 @@ function createTransferUI() {
                         <span id="font-size-display">16px</span>
                     </div>
                     <div class="version-info">
-                        <span class="author">V1.91 by discord千秋梦</span>
+                        <span class="author">V1.92 by discord千秋梦</span>
                     </div>
                 </div>
                 <div class="preset-selection">
