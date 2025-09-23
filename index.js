@@ -724,9 +724,10 @@ function toggleNewEntries(apiInfo, side) {
 
       let visibleNewCount = 0;
       const searchValue = $(`#${side}-entry-search-inline`).val();
-      const searchTerm = searchValue ? searchValue.toLowerCase() : '';
+      const searchTerm = searchValue ? searchValue.toLowerCase().trim() : '';
+      const entriesData = side === 'left' ? window.leftEntries || [] : window.rightEntries || [];
 
-      // 隐藏非新增条目，对新增条目应用搜索过滤
+      // 隐藏非新增条目，对新增条目应用搜索过滤（名称或内容命中均显示）
       $(`#${side}-entries-list .entry-item`).each(function () {
         const $item = $(this);
         if (!$item.hasClass('position-item')) {
@@ -735,7 +736,12 @@ function toggleNewEntries(apiInfo, side) {
             // 这是新增条目，检查是否匹配搜索条件
             if (searchTerm) {
               const name = $item.find('.entry-name').text().toLowerCase();
-              const matches = name.includes(searchTerm);
+              let contentText = '';
+              if (identifier) {
+                const entry = entriesData.find(e => e && e.identifier === identifier);
+                contentText = (entry && entry.content ? entry.content : '').toLowerCase();
+              }
+              const matches = name.includes(searchTerm) || contentText.includes(searchTerm);
               if (matches) {
                 $item.show();
                 visibleNewCount++;
@@ -895,6 +901,316 @@ function ensureNewVersionFields(entry) {
 
 function ensureAllEntriesHaveNewFields(entries) {
   return entries.map(entry => ensureNewVersionFields(entry));
+}
+
+// ==================== 条目状态管理功能 ====================
+
+// 条目状态管理开关
+let entryStatesEnabled = localStorage.getItem('preset-transfer-entry-states-enabled') !== 'false';
+// 按名称前缀分组开关
+let entryStatesGroupByPrefix = localStorage.getItem('preset-transfer-entry-states-group') !== 'false';
+
+// 保护扩展数据的Hook
+let originalSavePreset = null;
+let hookInstalled = false;
+
+// Hook预设保存函数以保护扩展数据
+function hookPresetSaveToProtectExtensions() {
+  try {
+    // 如果已经安装过Hook，直接返回
+    if (hookInstalled) {
+      console.log('[EntryStates] Hook已安装，跳过');
+      return;
+    }
+
+    const apiInfo = getCurrentApiInfo();
+    if (!apiInfo || !apiInfo.presetManager) {
+      console.log('[EntryStates] API信息不可用，稍后重试');
+      return;
+    }
+
+    originalSavePreset = apiInfo.presetManager.savePreset.bind(apiInfo.presetManager);
+
+    // 创建新的保存函数，直接在保存的设置中包含扩展数据
+    apiInfo.presetManager.savePreset = async function hookPresetSaveToProtectExtensions(name, settings, options = {}) {
+      try {
+        // 获取现有的扩展数据
+        const existingPreset = PT.API.getPreset(name);
+        const existingExtensions = existingPreset?.extensions || {};
+
+        // 如果没有传入settings，说明是"更新当前预设"调用，需要获取完整预设并添加扩展数据
+        if (!settings) {
+          // 获取完整的预设文件内容，而不是只获取当前设置
+          const fullPreset = this.getCompletionPresetByName(name);
+          if (fullPreset) {
+            // 使用完整预设作为settings
+            settings = fullPreset;
+          } else {
+            // 如果获取不到完整预设，才回退到当前设置
+            settings = this.getPresetSettings(name);
+          }
+        }
+
+        // 确保settings有extensions字段
+        if (!settings.extensions) {
+          settings.extensions = {};
+        }
+
+        // 保护我们的扩展数据
+        if (existingExtensions.entryStates) {
+          settings.extensions.entryStates = existingExtensions.entryStates;
+        }
+        if (existingExtensions.regexBindings) {
+          settings.extensions.regexBindings = existingExtensions.regexBindings;
+        }
+
+        // 调用原始保存函数
+        const result = await originalSavePreset.call(this, name, settings, options);
+
+        // 同步更新内存中的预设对象，确保前端不会“看不到”extensions
+        try {
+          const presetObj = this.getCompletionPresetByName?.(name);
+          if (presetObj) {
+            if (!presetObj.extensions) presetObj.extensions = {};
+            if (existingExtensions.entryStates) {
+              presetObj.extensions.entryStates = existingExtensions.entryStates;
+            }
+            if (existingExtensions.regexBindings) {
+              presetObj.extensions.regexBindings = existingExtensions.regexBindings;
+            }
+          }
+        } catch (_) {}
+
+        return result;
+      } catch (error) {
+        console.error('[EntryStates] Hook保存失败:', error);
+        return await originalSavePreset.call(this, name, settings, options);
+      }
+    };
+
+    hookInstalled = true;
+    console.log('[EntryStates] 预设保存Hook已安装');
+  } catch (error) {
+    console.error('[EntryStates] 安装预设保存Hook失败:', error);
+  }
+}
+
+// 获取预设的条目状态配置
+function getPresetEntryStates(presetName) {
+  try {
+    const preset = PT.API.getPreset(presetName);
+
+    if (!preset || !preset.extensions) {
+      return getDefaultEntryStates();
+    }
+    const states = preset.extensions.entryStates;
+
+    if (!states) {
+      return getDefaultEntryStates();
+    }
+
+    return {
+      enabled: states.enabled !== false,
+      versions: Array.isArray(states.versions) ? states.versions : [],
+      currentVersion: states.currentVersion || null,
+    };
+  } catch (error) {
+    console.warn(`获取预设 "${presetName}" 的条目状态配置失败:`, error);
+    return getDefaultEntryStates();
+  }
+}
+
+// 保存预设的条目状态配置
+async function savePresetEntryStates(presetName, states) {
+  try {
+    const apiInfo = getCurrentApiInfo?.();
+
+    // 优先通过 presetManager 直接更新“内存对象 + 磁盘”，保证前端与后端一致
+    if (apiInfo && apiInfo.presetManager) {
+      const presetObj = apiInfo.presetManager.getCompletionPresetByName(presetName);
+      if (!presetObj) throw new Error(`预设 "${presetName}" 不存在`);
+
+      if (!presetObj.extensions) presetObj.extensions = {};
+      presetObj.extensions.entryStates = {
+        enabled: states.enabled !== false,
+        versions: Array.isArray(states.versions) ? states.versions : [],
+        currentVersion: states.currentVersion || null,
+      };
+
+      // 写回到磁盘，并更新列表（确保内存与磁盘一致）
+      await apiInfo.presetManager.savePreset(presetName, presetObj, { skipUpdate: false });
+      return true;
+    }
+
+    // 兜底：使用 PT.API.replacePreset（无 presetManager 时）
+    const preset = PT.API.getPreset(presetName);
+    if (!preset) throw new Error(`预设 "${presetName}" 不存在`);
+
+    if (!preset.extensions) preset.extensions = {};
+    preset.extensions.entryStates = {
+      enabled: states.enabled !== false,
+      versions: Array.isArray(states.versions) ? states.versions : [],
+      currentVersion: states.currentVersion || null,
+    };
+
+    await PT.API.replacePreset(presetName, preset);
+    return true;
+  } catch (error) {
+    console.error(`保存预设 "${presetName}" 的条目状态配置失败:`, error);
+    return false;
+  }
+}
+
+// 获取默认的条目状态配置
+function getDefaultEntryStates() {
+  return {
+    enabled: true,
+    versions: [],
+    currentVersion: null,
+  };
+}
+
+// 获取当前预设的条目开启状态
+function getCurrentEntryStates(presetName) {
+  try {
+    const apiInfo = getCurrentApiInfo();
+    if (!apiInfo) return {};
+
+    const presetData = getPresetDataFromManager(apiInfo, presetName);
+    if (!presetData) return {};
+
+    const entries = getOrderedPromptEntries(presetData, 'include_disabled');
+    const states = {};
+
+    entries.forEach(entry => {
+      if (entry.identifier) {
+        states[entry.identifier] = entry.enabled === true;
+      }
+    });
+
+    return states;
+  } catch (error) {
+    console.error('获取当前条目状态失败:', error);
+    return {};
+  }
+}
+
+// 应用条目状态版本
+async function applyEntryStates(presetName, versionId) {
+  try {
+    const statesConfig = getPresetEntryStates(presetName);
+    const version = statesConfig.versions.find(v => v.id === versionId);
+    if (!version) {
+      throw new Error('状态版本不存在');
+    }
+
+    const apiInfo = getCurrentApiInfo();
+    if (!apiInfo) throw new Error('无法获取API信息');
+
+    const presetData = getPresetDataFromManager(apiInfo, presetName);
+    if (!presetData) throw new Error('预设不存在');
+
+    // 确保 prompt_order 存在
+    if (!presetData.prompt_order) presetData.prompt_order = [];
+
+    const dummyCharacterId = 100001;
+    let characterPromptOrder = presetData.prompt_order.find(order => order.character_id === dummyCharacterId);
+
+    if (!characterPromptOrder) {
+      characterPromptOrder = { character_id: dummyCharacterId, order: [] };
+      presetData.prompt_order.push(characterPromptOrder);
+    }
+
+    // 应用状态到 prompt_order
+    characterPromptOrder.order.forEach(orderEntry => {
+      if (orderEntry.identifier && version.states.hasOwnProperty(orderEntry.identifier)) {
+        orderEntry.enabled = version.states[orderEntry.identifier];
+      }
+    });
+
+    // 保存预设
+    await apiInfo.presetManager.savePreset(presetName, presetData);
+
+    // 更新当前版本
+    statesConfig.currentVersion = versionId;
+    await savePresetEntryStates(presetName, statesConfig);
+
+    return true;
+  } catch (error) {
+    console.error('应用条目状态失败:', error);
+    throw error;
+  }
+}
+
+// 保存当前条目状态为新版本
+async function saveCurrentEntryStatesAsVersion(presetName, versionName) {
+  try {
+    const currentStates = getCurrentEntryStates(presetName);
+    const statesConfig = getPresetEntryStates(presetName);
+
+    const newVersion = {
+      id: generateUUID(),
+      name: versionName,
+      createdAt: new Date().toISOString(),
+      states: currentStates,
+    };
+
+    statesConfig.versions.push(newVersion);
+    statesConfig.currentVersion = newVersion.id;
+
+    const success = await savePresetEntryStates(presetName, statesConfig);
+    if (success) {
+      return newVersion;
+    } else {
+      throw new Error('保存失败');
+    }
+  } catch (error) {
+    console.error('保存条目状态版本失败:', error);
+    throw error;
+  }
+}
+
+// 删除条目状态版本
+async function deleteEntryStatesVersion(presetName, versionId) {
+  try {
+    const statesConfig = getPresetEntryStates(presetName);
+    const versionIndex = statesConfig.versions.findIndex(v => v.id === versionId);
+
+    if (versionIndex === -1) {
+      throw new Error('版本不存在');
+    }
+
+    statesConfig.versions.splice(versionIndex, 1);
+
+    // 如果删除的是当前版本，清除当前版本标记
+    if (statesConfig.currentVersion === versionId) {
+      statesConfig.currentVersion = null;
+    }
+
+    return await savePresetEntryStates(presetName, statesConfig);
+  } catch (error) {
+    console.error('删除条目状态版本失败:', error);
+    throw error;
+  }
+}
+
+// 重命名条目状态版本
+async function renameEntryStatesVersion(presetName, versionId, newName) {
+  try {
+    const statesConfig = getPresetEntryStates(presetName);
+    const version = statesConfig.versions.find(v => v.id === versionId);
+
+    if (!version) {
+      throw new Error('版本不存在');
+    }
+
+    version.name = newName;
+
+    return await savePresetEntryStates(presetName, statesConfig);
+  } catch (error) {
+    console.error('重命名条目状态版本失败:', error);
+    throw error;
+  }
 }
 
 // ==================== 正则绑定功能 ====================
@@ -1150,6 +1466,352 @@ function hideRegexSwitchingFeedback() {
   }, 1000);
 }
 
+// ==================== 预设+正则包导入导出功能 ====================
+
+// 导出预设+正则包
+async function exportPresetBundle(presetName) {
+  try {
+    // 获取完整的预设数据（包括 prompt_order）
+    const apiInfo = getCurrentApiInfo();
+    if (!apiInfo || !apiInfo.presetManager) {
+      throw new Error('无法获取预设管理器');
+    }
+
+    // 使用 getPresetDataFromManager 获取完整预设数据
+    const preset = getPresetDataFromManager(apiInfo, presetName);
+    if (!preset) {
+      throw new Error(`预设 "${presetName}" 不存在`);
+    }
+
+    // 获取正则绑定配置
+    const bindings = getPresetRegexBindings(presetName);
+
+    // 获取所有绑定的正则
+    const allRegexes = getAllAvailableRegexes();
+    const boundRegexes = allRegexes.filter(regex => bindings.exclusive.includes(regex.id));
+
+    // 构建导出数据
+    const bundleData = {
+      type: 'preset_with_regex_bundle',
+      version: '1.0',
+      metadata: {
+        exportTime: new Date().toISOString(),
+        presetName: presetName,
+        regexCount: boundRegexes.length,
+      },
+      preset: preset,
+      regexes: boundRegexes,
+      bindings: bindings,
+    };
+
+    // 生成文件名和下载
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-');
+    const fileName = `preset-bundle-${presetName}-${timestamp}.json`;
+    const fileData = JSON.stringify(bundleData, null, 2);
+
+    // 使用现有的下载函数
+    if (typeof download === 'function') {
+      download(fileData, fileName, 'application/json');
+    } else {
+      // 备用下载方法
+      const blob = new Blob([fileData], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    if (window.toastr) {
+      toastr.success(`预设包已导出: ${fileName}`);
+    }
+  } catch (error) {
+    console.error('导出预设包失败:', error);
+    throw error;
+  }
+}
+
+// 导入预设+正则包
+async function importPresetBundle(file) {
+  try {
+    // 读取文件内容
+    const fileText = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = e => resolve(e.target.result);
+      reader.onerror = reject;
+      reader.readAsText(file);
+    });
+
+    // 解析 JSON
+    const bundleData = JSON.parse(fileText);
+
+    // 验证文件格式
+    if (bundleData.type !== 'preset_with_regex_bundle') {
+      throw new Error('不是有效的预设包文件');
+    }
+
+    if (!bundleData.preset || !bundleData.regexes || !bundleData.bindings) {
+      throw new Error('预设包文件格式不完整');
+    }
+
+    // 检测冲突并处理
+    await handleImportConflicts(bundleData);
+  } catch (error) {
+    console.error('导入预设包失败:', error);
+    throw error;
+  }
+}
+
+// 处理导入冲突
+async function handleImportConflicts(bundleData) {
+  const $ = getJQuery();
+  const vars = CommonStyles.getVars();
+
+  // 检测预设名冲突（预设没有 name 属性，使用 metadata 中的名称）
+  const presetName = bundleData.metadata.presetName;
+  const existingPreset = PT.API.getPreset(presetName);
+
+  // 检测正则名冲突
+  const allRegexes = getAllAvailableRegexes();
+  const conflictingRegexes = bundleData.regexes.filter(importRegex =>
+    allRegexes.some(existing => existing.scriptName === importRegex.scriptName),
+  );
+
+  // 如果没有冲突，直接导入
+  if (!existingPreset && conflictingRegexes.length === 0) {
+    await executeImport(bundleData, 'none', '');
+    return;
+  }
+
+  // 显示冲突处理对话框
+  await showConflictResolutionDialog(bundleData, existingPreset, conflictingRegexes);
+}
+
+// 显示冲突处理对话框
+async function showConflictResolutionDialog(bundleData, existingPreset, conflictingRegexes) {
+  const $ = getJQuery();
+  const vars = CommonStyles.getVars();
+
+  return new Promise(resolve => {
+    const presetName = bundleData.metadata.presetName;
+
+    const dialogHtml = `
+      <div id="conflict-resolution-dialog" style="--pt-font-size: ${
+        vars.fontSize
+      }; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px); z-index: 10003; display: flex; align-items: center; justify-content: center; padding: 20px;">
+        <div style="background: ${
+          vars.bgColor
+        }; border-radius: 16px; padding: 24px; max-width: 500px; width: 100%; color: ${
+      vars.textColor
+    }; box-shadow: 0 20px 40px rgba(0,0,0,0.1); max-height: 80vh; overflow-y: auto;">
+          <div style="text-align: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid ${
+            vars.borderColor
+          };">
+            <h3 style="margin: 0 0 8px 0; font-size: calc(var(--pt-font-size) * 1.25); font-weight: 700;">⚠️ 检测到冲突</h3>
+            <p style="margin: 0; font-size: ${vars.fontSizeMedium}; color: ${
+      vars.tipColor
+    };">导入的预设包与现有内容存在冲突</p>
+          </div>
+
+          <div style="margin-bottom: 20px;">
+            ${
+              existingPreset
+                ? `
+              <div style="margin-bottom: 16px; padding: 12px; background: ${vars.sectionBg}; border-radius: 8px;">
+                <strong>预设冲突：</strong> "${presetName}" 已存在
+              </div>
+            `
+                : ''
+            }
+
+            ${
+              conflictingRegexes.length > 0
+                ? `
+              <div style="margin-bottom: 16px; padding: 12px; background: ${vars.sectionBg}; border-radius: 8px;">
+                <strong>正则冲突：</strong> ${conflictingRegexes.length} 个正则表达式名称已存在
+                <div style="margin-top: 8px; font-size: ${vars.fontSizeSmall}; color: ${vars.tipColor};">
+                  ${conflictingRegexes
+                    .slice(0, 3)
+                    .map(r => r.scriptName)
+                    .join(', ')}${conflictingRegexes.length > 3 ? '...' : ''}
+                </div>
+              </div>
+            `
+                : ''
+            }
+          </div>
+
+          <div style="margin-bottom: 20px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: 600; font-size: ${
+              vars.fontSizeMedium
+            };">处理方式：</label>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                <input type="radio" name="conflict-action" value="overwrite" style="margin: 0;">
+                <span>覆盖现有项目</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                <input type="radio" name="conflict-action" value="rename" checked style="margin: 0;">
+                <span>重命名导入项目（添加前缀）</span>
+              </label>
+            </div>
+
+            <div id="rename-prefix-section" style="margin-top: 12px;">
+              <label style="display: block; margin-bottom: 4px; font-size: ${vars.fontSizeSmall};">重命名前缀：</label>
+              <input type="text" id="rename-prefix" value="导入_" style="width: 100%; padding: 8px; border: 1px solid ${
+                vars.inputBorder
+              }; border-radius: 6px; background: ${vars.inputBg}; color: ${vars.textColor}; font-size: ${
+      vars.fontSizeMedium
+    };">
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 12px; justify-content: center;">
+            <button id="confirm-import" style="background: #059669; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: ${
+              vars.fontSizeMedium
+            };">确认导入</button>
+            <button id="cancel-import" style="background: #9ca3af; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: ${
+              vars.fontSizeMedium
+            };">取消</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    $('body').append(dialogHtml);
+
+    // 控制前缀输入框显示
+    $('input[name="conflict-action"]').on('change', function () {
+      const showPrefix = $(this).val() === 'rename';
+      $('#rename-prefix-section').toggle(showPrefix);
+    });
+
+    // 确认导入
+    $('#confirm-import').on('click', async function () {
+      const action = $('input[name="conflict-action"]:checked').val();
+      const prefix = $('#rename-prefix').val() || '';
+
+      $('#conflict-resolution-dialog').remove();
+
+      try {
+        await executeImport(bundleData, action, prefix);
+        resolve();
+      } catch (e) {
+        console.error('执行导入失败:', e);
+        if (window.toastr) toastr.error('导入失败: ' + e.message);
+        resolve();
+      }
+    });
+
+    // 取消导入
+    $('#cancel-import').on('click', function () {
+      $('#conflict-resolution-dialog').remove();
+      resolve();
+    });
+
+    // 点击背景关闭
+    $('#conflict-resolution-dialog').on('click', function (e) {
+      if (e.target === this) {
+        $(this).remove();
+        resolve();
+      }
+    });
+  });
+}
+
+// 执行导入操作
+async function executeImport(bundleData, action, prefix) {
+  try {
+    const $ = getJQuery();
+    let presetName = bundleData.metadata.presetName;
+
+    // 处理预设名称
+    if (action === 'rename' && prefix) {
+      presetName = prefix + presetName;
+    }
+
+    // 导入正则表达式
+    const importedRegexIds = [];
+
+    for (const regex of bundleData.regexes) {
+      // 正则名称字段是 script_name，不是 scriptName
+      const originalName = regex.script_name;
+      let regexName = regex.script_name;
+
+      // 处理正则名称
+      if (action === 'rename' && prefix) {
+        regexName = prefix + regexName;
+        regex.script_name = regexName; // 更新 script_name
+        regex.scriptName = regexName; // 同时更新 scriptName（兼容性）
+      }
+
+      // 生成新的 ID（避免 ID 冲突）
+      const newId = generateUUID();
+      const oldId = regex.id;
+      regex.id = newId;
+      importedRegexIds.push({ oldId, newId });
+
+      // 使用 PT.API 更新正则列表
+      await PT.API.updateTavernRegexesWith(regexes => {
+        // 如果是覆盖模式，先删除同名正则
+        if (action === 'overwrite') {
+          const existingIndex = regexes.findIndex(r => r.scriptName === regexName || r.script_name === regexName);
+          if (existingIndex !== -1) {
+            regexes.splice(existingIndex, 1);
+          }
+        }
+
+        regexes.push(regex);
+        return regexes;
+      });
+    }
+
+    // 更新绑定配置中的正则 ID
+    const updatedBindings = { ...bundleData.bindings };
+    updatedBindings.exclusive = updatedBindings.exclusive.map(oldId => {
+      const mapping = importedRegexIds.find(m => m.oldId === oldId);
+      return mapping ? mapping.newId : oldId;
+    });
+
+    // 导入预设 - 使用 apiInfo.presetManager.savePreset 创建新预设
+    const apiInfo = getCurrentApiInfo();
+    if (apiInfo && apiInfo.presetManager) {
+      await apiInfo.presetManager.savePreset(presetName, bundleData.preset);
+    } else {
+      throw new Error('无法获取预设管理器');
+    }
+
+    // 等待预设保存完成后再保存正则绑定配置
+    setTimeout(async () => {
+      try {
+        await savePresetRegexBindings(presetName, updatedBindings);
+      } catch (bindingError) {}
+    }, 500);
+
+    // 保存设置
+    if (typeof saveSettingsDebounced === 'function') {
+      saveSettingsDebounced();
+    }
+
+    // 刷新正则列表（如果有相关函数）
+    if (typeof render_tavern_regexes_debounced === 'function') {
+      render_tavern_regexes_debounced();
+    }
+
+    if (window.toastr) {
+      toastr.success(`预设包导入成功！预设: ${presetName}，正则: ${bundleData.regexes.length} 个`);
+    }
+  } catch (error) {
+    console.error('执行导入失败:', error);
+    throw error;
+  }
+}
+
+// 使用现有的 generateUUID 函数
+
 // ==================== 全局预设监听器 ====================
 
 let globalPresetListener = {
@@ -1304,6 +1966,24 @@ let globalPresetListener = {
       // 更新工具界面与原生折叠面板状态（如果已存在）
       if (toPreset) {
         updatePresetRegexStatus(toPreset);
+
+        // 更新条目状态管理面板
+        if (typeof updateNativeEntryStatesPanel === 'function') {
+          updateNativeEntryStatesPanel(toPreset);
+          // 如果面板已展开，刷新内容
+          try {
+            const entryStatesPanel = $('#st-native-entry-states-panel');
+            if (entryStatesPanel.length) {
+              const $content = entryStatesPanel.find('.content');
+              const expanded = $content.is(':visible');
+              if (expanded) {
+                renderNativeEntryStatesContent(toPreset);
+                bindNativeEntryStatesPanelEvents(toPreset);
+              }
+            }
+          } catch (_) {}
+        }
+
         if (typeof updateNativeRegexPanel === 'function') {
           updateNativeRegexPanel(toPreset);
           // 如果面板已展开，刷新列表并保持筛选与展开状态
@@ -1448,6 +2128,322 @@ function updatePresetRegexStatus(presetName) {
   // 左右侧旧按钮已移除，状态仅在面板内展示
 }
 
+// 在原生页面中注入"条目状态管理"折叠面板（默认折叠）
+function ensureNativeEntryStatesPanelInjected() {
+  const $ = getJQuery();
+  const container = $('#openai_api-presets');
+  if (!container.length) return false;
+  if ($('#st-native-entry-states-panel').length) return true;
+
+  // 使用酒馆原生样式类，最小化自定义CSS
+  if (!$('#st-native-entry-states-styles').length) {
+    $('head').append(`
+      <style id="st-native-entry-states-styles">
+        /* 简化样式 - 跟随酒馆美化主题 */
+        #st-native-entry-states-panel { margin-top: 10px; }
+        #st-native-entry-states-panel .header { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+        #st-native-entry-states-panel .header .title { font-weight: 600; }
+        #st-native-entry-states-panel .version-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px; border-radius: 6px; }
+        #st-native-entry-states-panel .version-item:hover { background: rgba(0,0,0,0.05); }
+        #st-native-entry-states-panel .version-name { flex: 1; font-weight: 500; }
+        #st-native-entry-states-panel .version-date { font-size: 11px; opacity: 0.7; }
+        #st-native-entry-states-panel .version-actions { display: flex; gap: 4px; }
+        #st-native-entry-states-panel .current-version { font-weight: 600; }
+      </style>
+    `);
+  }
+
+  const html = `
+    <div id="st-native-entry-states-panel">
+      <div class="header" style="display: flex; align-items: center; gap: 4px;">
+        <button id="st-entry-states-toggle" class="menu_button" title="展开/折叠">▶</button>
+        <span class="title">条目状态</span>
+        <div style="flex:1;"></div>
+        <button id="save-current-entry-states" class="menu_button" style="font-size: 11px; padding: 2px 6px; display: inline-block; white-space: nowrap;" title="保存当前条目状态">💾保存</button>
+        <button id="entry-states-group-toggle" class="menu_button" style="font-size: 11px; padding: 2px 6px; display: inline-block; white-space: nowrap;" title="按名称前缀分组显示">${
+          entryStatesGroupByPrefix ? '分组:开' : '分组:关'
+        }</button>
+        <button id="entry-states-switch" class="menu_button" title="开启/关闭条目状态管理功能">${
+          entryStatesEnabled ? '●' : '○'
+        }</button>
+      </div>
+      <div class="content" style="display:none; max-height:50vh; overflow:auto; padding:10px;">
+        <div id="st-entry-states-status" style="opacity: .9;">加载中...</div>
+      </div>
+    </div>`;
+
+  container.append(html);
+  bindNativeEntryStatesMainPanelEvents();
+  const current = PT.API.getLoadedPresetName?.();
+  if (current) updateNativeEntryStatesPanel(current);
+  return true;
+}
+
+// 渲染条目状态管理内容
+function renderNativeEntryStatesContent(presetName) {
+  const $ = getJQuery();
+  const panel = $('#st-native-entry-states-panel');
+  if (!panel.length) return;
+
+  const statesConfig = getPresetEntryStates(presetName);
+  const currentStates = getCurrentEntryStates(presetName);
+  const entryCount = Object.keys(currentStates).length;
+  const enabledCount = Object.values(currentStates).filter(Boolean).length;
+
+  let html = `
+    <div style="margin-bottom: 12px; padding: 8px; background: rgba(0,0,0,0.05); border-radius: 6px;">
+      <div style="font-weight: 600; margin-bottom: 4px;">当前状态</div>
+      <div style="font-size: 12px; opacity: 0.8;">
+        共 ${entryCount} 个条目，已开启 ${enabledCount} 个
+      </div>
+    </div>
+  `;
+
+  if (statesConfig.versions.length === 0) {
+    html += `
+      <div style="text-align: center; padding: 20px; opacity: 0.6;">
+        <div>暂无保存的状态版本</div>
+        <div style="font-size: 11px; margin-top: 4px;">点击"💾保存"按钮保存当前状态</div>
+      </div>
+    `;
+  } else {
+    html += '<div style="margin-bottom: 8px; font-weight: 600;">已保存的状态版本</div>';
+
+    const renderVersionItem = version => {
+      const isCurrent = version.id === statesConfig.currentVersion;
+      const date = new Date(version.createdAt).toLocaleDateString();
+      const versionEntryCount = Object.keys(version.states).length;
+      const versionEnabledCount = Object.values(version.states).filter(Boolean).length;
+      return `
+        <div class="version-item ${isCurrent ? 'current-version' : ''}" data-version-id="${
+        version.id
+      }" style="display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:6px; background: rgba(0,0,0,0.03); margin-bottom:6px;">
+          <div style="flex: 1;">
+            <div class="version-name">${escapeHtml(version.name)}</div>
+            <div class="version-date" style="opacity:.8; font-size:12px;">${date} · ${versionEnabledCount}/${versionEntryCount} 开启</div>
+          </div>
+          <div class="version-actions" style="display:flex; gap:6px;">
+            <button class="menu_button apply-version-btn" style="font-size: 10px; padding: 1px 4px;" title="应用此状态">应用</button>
+            <button class="menu_button rename-version-btn" style="font-size: 10px; padding: 1px 4px;" title="重命名">✏️</button>
+            <button class="menu_button delete-version-btn" style="font-size: 10px; padding: 1px 4px;" title="删除">🗑️</button>
+          </div>
+        </div>`;
+    };
+
+    if (entryStatesGroupByPrefix) {
+      const getGroupName = name => {
+        const m = (name || '').match(/^(【[^】]+】|[^-\[\]_.:：]+[-\[\]_.:：])/);
+        let g = m ? m[1].replace(/[-\[\]_.:：]$/, '').replace(/^【|】$/g, '') : '未分组';
+        g = (g || '未分组').replace(/['"\\]/g, '').trim();
+        return g.length ? g : '未分组';
+      };
+      const groups = new Map();
+      statesConfig.versions.forEach(v => {
+        const g = getGroupName(v.name || '');
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g).push(v);
+      });
+      html += '<div id="es-groups">';
+      for (const [gname, list] of groups.entries()) {
+        html += `
+          <div class="es-group" data-group="${escapeHtml(gname)}">
+            <div class="es-group-title" style="display:flex; align-items:center; gap:8px; cursor:pointer; padding:6px 8px;">
+              <span class="es-group-toggle" style="width:16px; text-align:center;">▶</span>
+              <span class="es-group-name" style="flex:1;">${escapeHtml(gname)}</span>
+              <span class="es-group-count" style="opacity:.7; font-size:12px;">${list.length}</span>
+            </div>
+            <div class="es-group-content" style="display:none;">`;
+        list.forEach(v => {
+          html += renderVersionItem(v);
+        });
+        html += '</div></div>';
+      }
+      html += '</div>';
+    } else {
+      statesConfig.versions.forEach(v => {
+        html += renderVersionItem(v);
+      });
+    }
+  }
+
+  panel.find('.content').html(html);
+}
+
+// 绑定条目状态管理面板事件
+function bindNativeEntryStatesPanelEvents(presetName) {
+  const $ = getJQuery();
+  const panel = $('#st-native-entry-states-panel');
+  if (!panel.length) return;
+
+  // 分组折叠/展开
+  panel.off('click', '.es-group-title').on('click', '.es-group-title', function () {
+    const group = $(this).closest('.es-group');
+    const content = group.find('.es-group-content').first();
+    const toggle = $(this).find('.es-group-toggle');
+    const isCollapsed = !content.is(':visible');
+    content.slideToggle(120);
+    toggle.text(isCollapsed ? '▼' : '▶');
+  });
+
+  // 应用状态版本
+  panel.off('click', '.apply-version-btn').on('click', '.apply-version-btn', async function (e) {
+    e.stopPropagation();
+    const versionId = $(this).closest('.version-item').data('version-id');
+    const currentPreset = PT.API.getLoadedPresetName?.();
+
+    if (!currentPreset) {
+      if (window.toastr) toastr.error('请先选择一个预设');
+      return;
+    }
+
+    try {
+      await applyEntryStates(currentPreset, versionId);
+      updateNativeEntryStatesPanel(currentPreset);
+      renderNativeEntryStatesContent(currentPreset);
+      if (window.toastr) toastr.success('状态已应用');
+    } catch (error) {
+      console.error('应用状态失败:', error);
+      if (window.toastr) toastr.error('应用状态失败: ' + error.message);
+    }
+  });
+
+  // 重命名状态版本
+  panel.off('click', '.rename-version-btn').on('click', '.rename-version-btn', async function (e) {
+    e.stopPropagation();
+    const versionId = $(this).closest('.version-item').data('version-id');
+    const currentName = $(this).closest('.version-item').find('.version-name').text();
+    const currentPreset = PT.API.getLoadedPresetName?.();
+
+    const newName = prompt('请输入新名称:', currentName);
+    if (!newName || newName === currentName) return;
+
+    try {
+      await renameEntryStatesVersion(currentPreset, versionId, newName);
+      renderNativeEntryStatesContent(currentPreset);
+      if (window.toastr) toastr.success('重命名成功');
+    } catch (error) {
+      console.error('重命名失败:', error);
+      if (window.toastr) toastr.error('重命名失败: ' + error.message);
+    }
+  });
+
+  // 删除状态版本
+  panel.off('click', '.delete-version-btn').on('click', '.delete-version-btn', async function (e) {
+    e.stopPropagation();
+    const versionId = $(this).closest('.version-item').data('version-id');
+    const versionName = $(this).closest('.version-item').find('.version-name').text();
+    const currentPreset = PT.API.getLoadedPresetName?.();
+
+    if (!confirm(`确定要删除状态版本"${versionName}"吗？`)) return;
+
+    try {
+      await deleteEntryStatesVersion(currentPreset, versionId);
+      renderNativeEntryStatesContent(currentPreset);
+      updateNativeEntryStatesPanel(currentPreset);
+      if (window.toastr) toastr.success('删除成功');
+    } catch (error) {
+      console.error('删除失败:', error);
+      if (window.toastr) toastr.error('删除失败: ' + error.message);
+    }
+  });
+}
+
+// 绑定条目状态管理主面板事件
+function bindNativeEntryStatesMainPanelEvents() {
+  const $ = getJQuery();
+  const panel = $('#st-native-entry-states-panel');
+  if (!panel.length) return;
+
+  // 折叠/展开按钮
+  $('#st-entry-states-toggle')
+    .off('click')
+    .on('click', function () {
+      const $content = panel.find('.content');
+      const wasOpen = $content.is(':visible');
+      $content.slideToggle(150);
+      $(this).text(wasOpen ? '▶' : '▼');
+      if (!wasOpen) {
+        try {
+          const presetName = PT.API.getLoadedPresetName?.();
+          if (presetName) {
+            renderNativeEntryStatesContent(presetName);
+            bindNativeEntryStatesPanelEvents(presetName);
+          } else {
+            panel.find('#st-entry-states-status').text('未检测到当前预设');
+          }
+        } catch (e) {
+          console.error('[EntryStatesPanel] 展开面板失败:', e);
+          if (window.toastr) toastr.error('打开状态管理界面失败: ' + e.message);
+        }
+      }
+    });
+
+  // 保存当前状态按钮
+  $('#save-current-entry-states')
+    .off('click')
+    .on('click', async function () {
+      try {
+        const currentPreset = PT.API.getLoadedPresetName?.();
+        if (!currentPreset) {
+          if (window.toastr) toastr.error('请先选择一个预设');
+          return;
+        }
+
+        const versionName = prompt('请输入状态版本名称:', '新状态版本');
+        if (!versionName) return;
+
+        await saveCurrentEntryStatesAsVersion(currentPreset, versionName);
+        updateNativeEntryStatesPanel(currentPreset);
+        renderNativeEntryStatesContent(currentPreset);
+        if (window.toastr) toastr.success('状态已保存');
+      } catch (e) {
+        console.error('保存状态失败:', e);
+        if (window.toastr) toastr.error('保存状态失败: ' + e.message);
+      }
+    });
+
+  // 分组开关按钮
+  $('#entry-states-group-toggle')
+    .off('click')
+    .on('click', function () {
+      entryStatesGroupByPrefix = !entryStatesGroupByPrefix;
+      localStorage.setItem('preset-transfer-entry-states-group', entryStatesGroupByPrefix);
+      $(this).text(entryStatesGroupByPrefix ? '分组:开' : '分组:关');
+      const presetName = PT.API.getLoadedPresetName?.();
+      if (presetName) renderNativeEntryStatesContent(presetName);
+    });
+
+  // 功能开关按钮
+  $('#entry-states-switch')
+    .off('click')
+    .on('click', function () {
+      entryStatesEnabled = !entryStatesEnabled;
+      localStorage.setItem('preset-transfer-entry-states-enabled', entryStatesEnabled);
+      $(this).text(entryStatesEnabled ? '●' : '○');
+      if (window.toastr) {
+        toastr.info(entryStatesEnabled ? '条目状态管理已开启' : '条目状态管理已关闭');
+      }
+    });
+}
+
+// 更新条目状态管理面板状态显示
+function updateNativeEntryStatesPanel(presetName) {
+  try {
+    const $ = getJQuery();
+    const panel = $('#st-native-entry-states-panel');
+
+    if (!panel.length) return;
+    const statesConfig = getPresetEntryStates(presetName);
+    const count = Array.isArray(statesConfig.versions) ? statesConfig.versions.length : 0;
+    panel.find('#st-entry-states-status').text(`预设: ${presetName}（已保存 ${count} 个状态版本）`);
+
+    // 更新开关按钮状态
+    panel.find('#entry-states-switch').text(entryStatesEnabled ? '●' : '○');
+  } catch (e) {
+    console.warn('更新条目状态管理面板失败:', e);
+  }
+}
+
 // 在原生页面中注入“正则绑定/切换”折叠面板（默认折叠）
 function ensureNativeRegexPanelInjected() {
   const $ = getJQuery();
@@ -1485,10 +2481,13 @@ function ensureNativeRegexPanelInjected() {
 
   const html = `
     <div id="st-native-regex-panel">
-      <div class="header">
+      <div class="header" style="display: flex; align-items: center; gap: 4px;">
         <button id="st-regex-toggle" class="menu_button" title="展开/折叠">▶</button>
         <span class="title">正则绑定</span>
         <div style="flex:1;"></div>
+        <button id="export-preset-bundle" class="menu_button" style="font-size: 11px; padding: 2px 6px; display: inline-block; white-space: nowrap;" title="导出预设+正则包">导出预设</button>
+        <button id="import-preset-bundle" class="menu_button" style="font-size: 11px; padding: 2px 6px; display: inline-block; white-space: nowrap;" title="导入预设+正则包">导入预设</button>
+        <input type="file" id="import-preset-bundle-file" accept=".json" style="display: none;">
         <button id="regex-binding-switch" class="menu_button" title="开启/关闭正则绑定功能">${
           regexBindingEnabled ? '●' : '○'
         }</button>
@@ -1644,6 +2643,49 @@ function bindNativeRegexPanelEvents() {
   const $ = getJQuery();
   const panel = $('#st-native-regex-panel');
   if (!panel.length) return;
+
+  // 导出预设包按钮事件
+  $('#export-preset-bundle')
+    .off('click')
+    .on('click', async function () {
+      try {
+        const currentPreset = PT.API.getLoadedPresetName?.();
+        if (!currentPreset) {
+          if (window.toastr) toastr.error('请先选择一个预设');
+          return;
+        }
+        await exportPresetBundle(currentPreset);
+      } catch (e) {
+        console.error('导出预设包失败:', e);
+        if (window.toastr) toastr.error('导出失败: ' + e.message);
+      }
+    });
+
+  // 导入预设包按钮事件
+  $('#import-preset-bundle')
+    .off('click')
+    .on('click', function () {
+      $('#import-preset-bundle-file').trigger('click');
+    });
+
+  // 文件选择事件
+  $('#import-preset-bundle-file')
+    .off('change')
+    .on('change', async function (e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      try {
+        await importPresetBundle(file);
+      } catch (e) {
+        console.error('导入预设包失败:', e);
+        if (window.toastr) toastr.error('导入失败: ' + e.message);
+      }
+
+      // 清空文件选择
+      $(this).val('');
+    });
+
   $('#st-regex-toggle')
     .off('click')
     .on('click', function () {
@@ -1698,11 +2740,18 @@ function updateNativeRegexPanel(presetName) {
 }
 
 function initNativeRegexPanelIntegration() {
+  // 先安装Hook（只需要安装一次）
+  hookPresetSaveToProtectExtensions();
+
   // 尝试立即注入；若容器未就绪，稍后重试几次
   let attempts = 0;
   const tryInject = () => {
     attempts++;
-    if (ensureNativeRegexPanelInjected()) return;
+    // 先注入条目状态管理面板，再注入正则绑定面板
+    const entryStatesInjected = ensureNativeEntryStatesPanelInjected();
+    const regexInjected = ensureNativeRegexPanelInjected();
+
+    if (entryStatesInjected && regexInjected) return;
     if (attempts < 10) setTimeout(tryInject, 500);
   };
   tryInject();
@@ -2004,7 +3053,12 @@ function createTransferUI() {
                         <h4>📝 双向预设管理</h4>
                         <p>💡 提示：左右两侧显示不同预设的条目，可以互相转移、编辑、删除，点击条目右侧的➕按钮可在此处新建</p>
                         <div class="search-section">
-                            <input type="text" id="entry-search" placeholder="🔍 搜索条目...">
+                            <div class="search-input-wrapper">
+                                <input type="text" id="entry-search" placeholder="🔍 搜索条目...">
+                                <label class="search-content-toggle">
+                                    <input type="checkbox" id="search-content-main" checked>
+                                    <span>含内容</span>
+                                </label>
                             </div>
                         </div>
                     </div>
@@ -2071,7 +3125,13 @@ function createTransferUI() {
                                 <span id="left-selection-count" class="selection-count"></span>
                             </div>
                             <div class="left-search-container" style="display: none;">
-                                <input type="text" id="left-entry-search-inline" placeholder="🔍 搜索左侧条目...">
+                                <div class="search-input-wrapper">
+                                    <input type="text" id="left-entry-search-inline" placeholder="🔍 搜索左侧条目...">
+                                    <label class="search-content-toggle">
+                                        <input type="checkbox" id="search-content-left" checked>
+                                        <span>含内容</span>
+                                    </label>
+                                </div>
                             </div>
                             <div id="left-entries-list" class="entries-list"></div>
                             <div class="side-actions">
@@ -2114,7 +3174,13 @@ function createTransferUI() {
                                 <span id="right-selection-count" class="selection-count"></span>
                             </div>
                             <div class="right-search-container" style="display: none;">
-                                <input type="text" id="right-entry-search-inline" placeholder="🔍 搜索右侧条目...">
+                                <div class="search-input-wrapper">
+                                    <input type="text" id="right-entry-search-inline" placeholder="🔍 搜索右侧条目...">
+                                    <label class="search-content-toggle">
+                                        <input type="checkbox" id="search-content-right" checked>
+                                        <span>含内容</span>
+                                    </label>
+                                </div>
                             </div>
                             <div id="right-entries-list" class="entries-list"></div>
                             <div class="side-actions">
@@ -2725,6 +3791,25 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
             box-shadow: 0 0 0 3px rgba(107, 114, 128, 0.1) !important;
             outline: none !important;
         }
+        #preset-transfer-modal .search-input-wrapper {
+            position: relative; display: block;
+        }
+        #preset-transfer-modal .search-input-wrapper input[type="text"] {
+            width: 100%; padding-right: ${isMobile ? '80px' : '70px'};
+        }
+        #preset-transfer-modal .search-content-toggle {
+            position: absolute; right: ${isMobile ? '12px' : '10px'}; top: 50%;
+            transform: translateY(-50%); display: flex; align-items: center; gap: 4px;
+            color: ${vars.tipColor}; font-size: ${
+    isMobile ? 'calc(var(--pt-font-size) * 0.75)' : 'calc(var(--pt-font-size) * 0.6875)'
+  }; font-weight: 500;
+            cursor: pointer; user-select: none; white-space: nowrap;
+            pointer-events: all; z-index: 1;
+        }
+        #preset-transfer-modal .search-content-toggle input[type="checkbox"] {
+            ${isMobile ? 'transform: scale(0.9);' : 'transform: scale(0.8);'}
+            accent-color: #6b7280; cursor: pointer; margin: 0;
+        }
         #preset-transfer-modal .selection-controls {
             display: ${isMobile ? 'grid' : 'flex'};
             ${isMobile ? 'grid-template-columns: 1fr 1fr; grid-gap: 10px;' : 'flex-wrap: wrap; gap: 10px;'}
@@ -3009,7 +4094,8 @@ function applyStyles(isMobile, isSmallScreen, isPortrait) {
    `;
   }
 
-  // 重新注入正则面板样式（修复主题切换后折叠功能失效的问题）
+  // 重新注入面板样式（修复主题切换后折叠功能失效的问题）
+  ensureNativeEntryStatesPanelInjected();
   ensureNativeRegexPanelInjected();
 }
 
@@ -3019,9 +4105,22 @@ function bindTransferEvents(apiInfo, modal) {
   const rightSelect = $('#right-preset');
   const loadBtn = $('#load-entries');
 
+  // 恢复搜索内容选项偏好
+  function restoreSearchContentPreferences() {
+    const mainPref = localStorage.getItem('preset-transfer-search-content-main');
+    const leftPref = localStorage.getItem('preset-transfer-search-content-left');
+    const rightPref = localStorage.getItem('preset-transfer-search-content-right');
+
+    // 默认为true（选中状态），除非用户明确设置为false
+    $('#search-content-main').prop('checked', mainPref !== 'false');
+    $('#search-content-left').prop('checked', leftPref !== 'false');
+    $('#search-content-right').prop('checked', rightPref !== 'false');
+  }
+
   // 重置界面到初始状态的函数
   function resetInterface() {
     $('#entries-container, #single-container, #dual-container').hide();
+    $('.search-section, .left-search-container, .right-search-container').hide();
     $('#left-entries-list, #right-entries-list, #single-entries-list').empty();
     $('#left-selection-count, #right-selection-count, #single-selection-count').text('');
     $('#entry-search, #left-entry-search-inline, #right-entry-search-inline').val('');
@@ -3130,6 +4229,20 @@ function bindTransferEvents(apiInfo, modal) {
   $('#entry-search').on('input', debouncedDualSearch);
   $('#left-entry-search-inline').on('input', debouncedLeftSearch);
   $('#right-entry-search-inline').on('input', debouncedRightSearch);
+
+  // 搜索内容选项事件绑定
+  $('#search-content-main').on('change', function () {
+    localStorage.setItem('preset-transfer-search-content-main', $(this).is(':checked'));
+    debouncedDualSearch();
+  });
+  $('#search-content-left').on('change', function () {
+    localStorage.setItem('preset-transfer-search-content-left', $(this).is(':checked'));
+    debouncedLeftSearch();
+  });
+  $('#search-content-right').on('change', function () {
+    localStorage.setItem('preset-transfer-search-content-right', $(this).is(':checked'));
+    debouncedRightSearch();
+  });
   // 添加防抖功能，避免频繁重新加载
   let displayModeChangeTimeout;
   $('#left-display-mode, #right-display-mode, #single-display-mode').on('change', function () {
@@ -3147,6 +4260,9 @@ function bindTransferEvents(apiInfo, modal) {
 
   // 绑定设置变更事件
   $('#auto-close-modal, #auto-enable-entry').on('change', saveCurrentSettings);
+
+  // 恢复搜索内容选项偏好
+  restoreSearchContentPreferences();
 
   // 左侧控制
   $('#left-select-all').on('click', () => {
@@ -3290,7 +4406,7 @@ function loadSinglePresetMode(apiInfo, presetName) {
     $('#entries-container').show();
 
     // 显示单一搜索栏，隐藏内联搜索栏
-    $('#entry-search').show();
+    $('.search-section').show();
     $('.left-search-section').hide();
     $('.left-search-container').hide();
     $('.right-search-container').hide();
@@ -3352,7 +4468,7 @@ function loadDualPresetMode(apiInfo, leftPreset, rightPreset) {
     $('#entries-container').show();
 
     // 隐藏单一搜索栏，显示内联搜索栏
-    $('#entry-search').hide();
+    $('.search-section').hide();
     $('.left-search-section').hide();
     $('.left-search-container').show();
     $('.right-search-container').show();
@@ -3635,7 +4751,7 @@ function updateSelectionCount() {
 }
 
 function filterDualEntries(searchTerm) {
-  const term = searchTerm.toLowerCase();
+  const term = (searchTerm || '').toLowerCase().trim();
   const $ = getJQuery();
 
   // 清除之前的搜索结果
@@ -3656,28 +4772,51 @@ function filterDualEntries(searchTerm) {
     return;
   }
 
-  // 统一过滤所有可见的条目列表
+  // 统一过滤所有可见的条目列表（名称或内容命中均显示）
   $('#left-entries-list .entry-item, #right-entries-list .entry-item, #single-entries-list .entry-item').each(
     function () {
       const $item = $(this);
-      if (!$item.hasClass('position-item')) {
-        const name = $item.find('.entry-name').text().toLowerCase();
-        const matches = name.includes(term);
-        $item.toggle(matches);
+      if ($item.hasClass('position-item')) return;
 
-        if (matches) {
-          addJumpButton($item);
-        } else {
-          // 不匹配的条目隐藏"在此处新建"按钮
-          $item.find('.create-here-btn').hide();
+      // 名称匹配
+      const name = $item.find('.entry-name').text().toLowerCase();
+
+      // 根据所在列表获取对应的数据源
+      let entriesRef = [];
+      if ($item.closest('#left-entries-list').length) entriesRef = window.leftEntries || [];
+      else if ($item.closest('#right-entries-list').length) entriesRef = window.rightEntries || [];
+      else if ($item.closest('#single-entries-list').length) entriesRef = window.singleEntries || [];
+
+      // 内容匹配（通过identifier或index获取）
+      const identifier = $item.data('identifier');
+      let contentText = '';
+      if (identifier) {
+        const entry = entriesRef.find(e => e && e.identifier === identifier);
+        contentText = (entry && entry.content ? entry.content : '').toLowerCase();
+      } else {
+        const idx = parseInt($item.data('index'));
+        if (!isNaN(idx) && entriesRef[idx]) {
+          contentText = (entriesRef[idx].content || '').toLowerCase();
         }
+      }
+
+      // 检查是否搜索内容
+      const searchContent = $('#search-content-main').is(':checked');
+      const matches = searchContent ? name.includes(term) || contentText.includes(term) : name.includes(term);
+      $item.toggle(matches);
+
+      if (matches) {
+        addJumpButton($item);
+      } else {
+        // 不匹配的条目隐藏"在此处新建"按钮
+        $item.find('.create-here-btn').hide();
       }
     },
   );
 }
 
 function filterSideEntries(side, searchTerm) {
-  const term = searchTerm.toLowerCase();
+  const term = (searchTerm || '').toLowerCase().trim();
   const $ = getJQuery();
 
   // 清除指定侧的搜索结果
@@ -3696,20 +4835,44 @@ function filterSideEntries(side, searchTerm) {
     return;
   }
 
-  // 只过滤指定侧的条目
+  // 只过滤指定侧的条目（名称或内容命中均显示）
   $(`#${side}-entries-list .entry-item`).each(function () {
     const $item = $(this);
-    if (!$item.hasClass('position-item')) {
-      const name = $item.find('.entry-name').text().toLowerCase();
-      const matches = name.includes(term);
-      $item.toggle(matches);
+    if ($item.hasClass('position-item')) return;
 
-      if (matches) {
-        addJumpButton($item);
-      } else {
-        // 不匹配的条目隐藏"在此处新建"按钮
-        $item.find('.create-here-btn').hide();
+    // 名称匹配
+    const name = $item.find('.entry-name').text().toLowerCase();
+
+    // 内容匹配（通过identifier或index从对应侧数据源获取）
+    const identifier = $item.data('identifier');
+    const entriesRef =
+      side === 'left'
+        ? window.leftEntries || []
+        : side === 'right'
+        ? window.rightEntries || []
+        : window.singleEntries || [];
+    let contentText = '';
+    if (identifier) {
+      const entry = entriesRef.find(e => e && e.identifier === identifier);
+      contentText = (entry && entry.content ? entry.content : '').toLowerCase();
+    } else {
+      const idx = parseInt($item.data('index'));
+      if (!isNaN(idx) && entriesRef[idx]) {
+        contentText = (entriesRef[idx].content || '').toLowerCase();
       }
+    }
+
+    // 检查是否搜索内容
+    const searchContentId = side === 'left' ? '#search-content-left' : '#search-content-right';
+    const searchContent = $(searchContentId).is(':checked');
+    const matches = searchContent ? name.includes(term) || contentText.includes(term) : name.includes(term);
+    $item.toggle(matches);
+
+    if (matches) {
+      addJumpButton($item);
+    } else {
+      // 不匹配的条目隐藏"在此处新建"按钮
+      $item.find('.create-here-btn').hide();
     }
   });
 }
