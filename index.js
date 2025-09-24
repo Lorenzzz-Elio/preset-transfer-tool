@@ -1,6 +1,6 @@
 // @ts-nocheck
 // Author: discord千秋梦
-// Version: v1.92
+// Version: v2.0
 
 // 性能优化工具函数
 function debounce(func, wait) {
@@ -3003,7 +3003,7 @@ function createTransferUI() {
                         <span id="font-size-display">16px</span>
                     </div>
                     <div class="version-info">
-                        <span class="author">V1.92 by discord千秋梦</span>
+                        <span class="author">V2.0 by discord千秋梦</span>
                     </div>
                 </div>
                 <div class="preset-selection">
