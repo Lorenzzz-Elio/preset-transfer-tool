@@ -1,6 +1,6 @@
-// @ts-nocheck
+﻿// @ts-nocheck
 // Author: discord千秋梦
-// Version: v2.0
+// Version: v2.1
 
 // 性能优化工具函数
 function debounce(func, wait) {
@@ -906,7 +906,11 @@ function ensureAllEntriesHaveNewFields(entries) {
 // ==================== 条目状态管理功能 ====================
 
 // 条目状态管理开关
-let entryStatesEnabled = localStorage.getItem('preset-transfer-entry-states-enabled') !== 'false';
+// 是否在保存状态版本时同步世界书
+
+let entryStatesSaveWorldBindings =
+
+  localStorage.getItem('preset-transfer-entry-states-save-world-bindings') !== 'false';
 // 按名称前缀分组开关
 let entryStatesGroupByPrefix = localStorage.getItem('preset-transfer-entry-states-group') !== 'false';
 
@@ -996,6 +1000,211 @@ function hookPresetSaveToProtectExtensions() {
 }
 
 // 获取预设的条目状态配置
+function sanitizeWorldBindings(list) {
+  if (!Array.isArray(list)) return [];
+  const result = [];
+  const seen = new Set();
+  list.forEach(item => {
+    if (typeof item !== 'string') return;
+    const name = item.trim();
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    result.push(name);
+  });
+  return result;
+}
+
+function normalizeEntryStatesConfig(states) {
+  const safeStates = states && typeof states === 'object' ? states : {};
+  const normalized = {
+    enabled: safeStates.enabled !== false,
+    versions: [],
+    currentVersion: safeStates.currentVersion || null,
+  };
+
+  if (Array.isArray(safeStates.versions)) {
+    normalized.versions = safeStates.versions
+      .map(version => {
+        if (!version || typeof version !== 'object') return null;
+        const normalizedVersion = { ...version };
+        if (!normalizedVersion.states || typeof normalizedVersion.states !== 'object') {
+          normalizedVersion.states = {};
+        }
+        normalizedVersion.worldBindings = sanitizeWorldBindings(normalizedVersion.worldBindings);
+        return normalizedVersion;
+      })
+      .filter(Boolean);
+  }
+
+  return normalized;
+}
+
+let worldInfoModulePromise = null;
+
+async function getWorldInfoModule() {
+  if (!worldInfoModulePromise) {
+    worldInfoModulePromise = import('/scripts/world-info.js').catch(error => {
+      worldInfoModulePromise = null;
+      throw error;
+    });
+  }
+  return worldInfoModulePromise;
+}
+
+
+function getWorldSelectionFromDom() {
+  try {
+    const $ = getJQuery();
+    if (!$) return null;
+    const select = $('#world_info');
+    if (!select.length) return null;
+    const selectedOptions = select.find('option:selected');
+    if (!selectedOptions.length) return [];
+    const names = [];
+    selectedOptions.each(function () {
+      const name = $(this).text().trim();
+      if (name && !names.includes(name)) {
+        names.push(name);
+      }
+    });
+    return sanitizeWorldBindings(names);
+  } catch (error) {
+    console.warn('[EntryStates] 读取界面世界书选择失败:', error);
+    return null;
+  }
+}
+
+async function getCurrentWorldSelection() {
+  const fromDom = getWorldSelectionFromDom();
+  if (Array.isArray(fromDom)) {
+    return fromDom;
+  }
+  try {
+    const module = await getWorldInfoModule();
+    const selected = Array.isArray(module.selected_world_info) ? module.selected_world_info : [];
+    return sanitizeWorldBindings(selected);
+  } catch (error) {
+    console.warn('[EntryStates] 获取世界书选择失败:', error);
+    return null;
+  }
+}
+
+async function applyWorldBindings(worldNames) {
+  const $ = getJQuery();
+  const sanitizedTargets = sanitizeWorldBindings(Array.isArray(worldNames) ? worldNames : []);
+  const hasTargets = sanitizedTargets.length > 0;
+  let module = null;
+
+  const ensureWorldInfoModule = async () => {
+    if (!module) {
+      module = await getWorldInfoModule();
+    }
+    return module;
+  };
+
+  const readAvailableFromDom = () => {
+    if (!$) return [];
+    const selectEl = $('#world_info');
+    if (!selectEl.length) return [];
+    return selectEl
+      .find('option')
+      .map((_, opt) => $(opt).text().trim())
+      .get()
+      .filter(Boolean);
+  };
+
+  let select = $ ? $('#world_info') : null;
+  let available = select && select.length ? readAvailableFromDom() : [];
+
+  if (hasTargets && available.length === 0) {
+    try {
+      const mod = await ensureWorldInfoModule();
+      if (typeof mod.updateWorldInfoList === 'function') {
+        await mod.updateWorldInfoList();
+      }
+      if (!select || !select.length) {
+        select = $ ? $('#world_info') : null;
+      }
+      if (select && select.length) {
+        available = readAvailableFromDom();
+      } else if (Array.isArray(mod.world_names)) {
+        available = mod.world_names.slice();
+      }
+    } catch (error) {
+      console.warn('[EntryStates] 更新世界书列表失败:', error);
+    }
+  }
+
+  if (!available.length && hasTargets) {
+    try {
+      const mod = await ensureWorldInfoModule();
+      if (Array.isArray(mod.world_names)) {
+        available = mod.world_names.slice();
+      }
+    } catch (error) {
+      console.warn('[EntryStates] 获取世界书列表失败:', error);
+    }
+  }
+
+  const availableSet = new Set(available);
+  const applied = [];
+  const missing = [];
+
+  if (hasTargets) {
+    sanitizedTargets.forEach(name => {
+      if (!availableSet.size || availableSet.has(name)) {
+        applied.push(name);
+      } else {
+        missing.push(name);
+      }
+    });
+  }
+
+  if (select && select.length) {
+    if (!hasTargets) {
+      select.val([]).trigger('change');
+    } else if (applied.length > 0) {
+      const values = [];
+      const appliedSet = new Set(applied);
+      select.find('option').each(function () {
+        const optionName = $(this).text().trim();
+        if (appliedSet.has(optionName)) {
+          values.push($(this).val());
+        }
+      });
+      select.val(values).trigger('change');
+    } else if (missing.length === sanitizedTargets.length) {
+      select.val([]).trigger('change');
+    }
+  } else {
+    if (!module && (hasTargets || !hasTargets)) {
+      try {
+        await ensureWorldInfoModule();
+      } catch (error) {
+        console.warn('[EntryStates] 同步世界书失败:', error);
+        return { applied, missing };
+      }
+    }
+    if (!module) {
+      return { applied, missing };
+    }
+
+    if (!hasTargets) {
+      module.selected_world_info = [];
+    } else if (applied.length > 0) {
+      module.selected_world_info = applied.slice();
+    }
+    try {
+      const context = getSillyTavernContext();
+      context?.saveSettingsDebounced?.();
+      context?.eventSource?.emit?.(context.eventTypes?.WORLDINFO_SETTINGS_UPDATED);
+    } catch (error) {
+      console.warn('[EntryStates] 同步世界书事件失败:', error);
+    }
+  }
+
+  return { applied, missing };
+}
 function getPresetEntryStates(presetName) {
   try {
     const preset = PT.API.getPreset(presetName);
@@ -1009,11 +1218,7 @@ function getPresetEntryStates(presetName) {
       return getDefaultEntryStates();
     }
 
-    return {
-      enabled: states.enabled !== false,
-      versions: Array.isArray(states.versions) ? states.versions : [],
-      currentVersion: states.currentVersion || null,
-    };
+    return normalizeEntryStatesConfig(states);
   } catch (error) {
     console.warn(`获取预设 "${presetName}" 的条目状态配置失败:`, error);
     return getDefaultEntryStates();
@@ -1023,40 +1228,39 @@ function getPresetEntryStates(presetName) {
 // 保存预设的条目状态配置
 async function savePresetEntryStates(presetName, states) {
   try {
+    const normalizedStates = normalizeEntryStatesConfig(states);
     const apiInfo = getCurrentApiInfo?.();
 
-    // 优先通过 presetManager 直接更新“内存对象 + 磁盘”，保证前端与后端一致
+    if (states && typeof states === 'object') {
+      states.enabled = normalizedStates.enabled;
+      states.versions = normalizedStates.versions;
+      states.currentVersion = normalizedStates.currentVersion;
+    }
+
+    // ����ͨ�� presetManager ֱ�Ӹ��¡��ڴ���� + ���̡�����֤ǰ������һ��
     if (apiInfo && apiInfo.presetManager) {
       const presetObj = apiInfo.presetManager.getCompletionPresetByName(presetName);
-      if (!presetObj) throw new Error(`预设 "${presetName}" 不存在`);
+      if (!presetObj) throw new Error(`Ԥ�� "${presetName}" ������`);
 
       if (!presetObj.extensions) presetObj.extensions = {};
-      presetObj.extensions.entryStates = {
-        enabled: states.enabled !== false,
-        versions: Array.isArray(states.versions) ? states.versions : [],
-        currentVersion: states.currentVersion || null,
-      };
+      presetObj.extensions.entryStates = normalizedStates;
 
-      // 写回到磁盘，并更新列表（确保内存与磁盘一致）
+      // д�ص����̣��������б���ȷ���ڴ������һ�£�
       await apiInfo.presetManager.savePreset(presetName, presetObj, { skipUpdate: false });
       return true;
     }
 
-    // 兜底：使用 PT.API.replacePreset（无 presetManager 时）
+    // ���ף�ʹ�� PT.API.replacePreset���� presetManager ʱ��
     const preset = PT.API.getPreset(presetName);
-    if (!preset) throw new Error(`预设 "${presetName}" 不存在`);
+    if (!preset) throw new Error(`Ԥ�� "${presetName}" ������`);
 
     if (!preset.extensions) preset.extensions = {};
-    preset.extensions.entryStates = {
-      enabled: states.enabled !== false,
-      versions: Array.isArray(states.versions) ? states.versions : [],
-      currentVersion: states.currentVersion || null,
-    };
+    preset.extensions.entryStates = normalizedStates;
 
     await PT.API.replacePreset(presetName, preset);
     return true;
   } catch (error) {
-    console.error(`保存预设 "${presetName}" 的条目状态配置失败:`, error);
+    console.error(`����Ԥ�� "${presetName}" ����Ŀ״̬����ʧ��:`, error);
     return false;
   }
 }
@@ -1135,6 +1339,31 @@ async function applyEntryStates(presetName, versionId) {
     statesConfig.currentVersion = versionId;
     await savePresetEntryStates(presetName, statesConfig);
 
+    if (entryStatesSaveWorldBindings && Object.prototype.hasOwnProperty.call(version, 'worldBindings')) {
+      try {
+        const { applied, missing } = await applyWorldBindings(version.worldBindings);
+        if (window.toastr) {
+          if (missing.length) {
+            toastr.warning(`世界书未找到: ${missing.join('、')}`);
+          }
+          if (applied.length) {
+            toastr.success(`已同步世界书: ${applied.join('、')}`);
+          } else if (Array.isArray(version.worldBindings) && version.worldBindings.length === 0) {
+            toastr.info('世界书选择已清空');
+          }
+        }
+      } catch (worldError) {
+        console.warn('同步世界书失败:', worldError);
+        if (window.toastr) {
+          toastr.error('同步世界书失败: ' + worldError.message);
+        }
+      }
+    } else if (!entryStatesSaveWorldBindings && Array.isArray(version.worldBindings) && version.worldBindings.length) {
+      if (window.toastr) {
+        toastr.info('世界书绑定功能已关闭，本次未同步世界书');
+      }
+    }
+
     return true;
   } catch (error) {
     console.error('应用条目状态失败:', error);
@@ -1148,12 +1377,27 @@ async function saveCurrentEntryStatesAsVersion(presetName, versionName) {
     const currentStates = getCurrentEntryStates(presetName);
     const statesConfig = getPresetEntryStates(presetName);
 
+    let worldBindings = null;
+    if (entryStatesSaveWorldBindings) {
+      worldBindings = await getCurrentWorldSelection();
+      if (worldBindings === null) {
+        console.warn('[EntryStates] 获取世界书选择失败，已跳过绑定保存');
+        if (window.toastr) {
+          toastr.warning('获取世界书选择失败，已跳过绑定保存');
+        }
+      }
+    }
+
     const newVersion = {
       id: generateUUID(),
       name: versionName,
       createdAt: new Date().toISOString(),
       states: currentStates,
     };
+
+    if (entryStatesSaveWorldBindings && worldBindings !== null) {
+      newVersion.worldBindings = worldBindings;
+    }
 
     statesConfig.versions.push(newVersion);
     statesConfig.currentVersion = newVersion.id;
@@ -2163,8 +2407,8 @@ function ensureNativeEntryStatesPanelInjected() {
         <button id="entry-states-group-toggle" class="menu_button" style="font-size: 11px; padding: 2px 6px; display: inline-block; white-space: nowrap;" title="按名称前缀分组显示">${
           entryStatesGroupByPrefix ? '分组:开' : '分组:关'
         }</button>
-        <button id="entry-states-switch" class="menu_button" title="开启/关闭条目状态管理功能">${
-          entryStatesEnabled ? '●' : '○'
+        <button id="entry-states-switch" class="menu_button" title="开启/关闭世界书绑定功能">${
+          entryStatesSaveWorldBindings ? '●' : '○'
         }</button>
       </div>
       <div class="content" style="display:none; max-height:50vh; overflow:auto; padding:10px;">
@@ -2190,6 +2434,17 @@ function renderNativeEntryStatesContent(presetName) {
   const entryCount = Object.keys(currentStates).length;
   const enabledCount = Object.values(currentStates).filter(Boolean).length;
 
+  const formatWorldBindingsSummary = worldBindings => {
+    if (!Array.isArray(worldBindings)) {
+      return '<div class="version-world" style="font-size: 12px; opacity: 0.75;">世界书: 未保存</div>';
+    }
+    if (worldBindings.length === 0) {
+      return '<div class="version-world" style="font-size: 12px; opacity: 0.75;">世界书: 无</div>';
+    }
+    const display = worldBindings.map(name => escapeHtml(name)).join('、');
+    return `<div class="version-world" style="font-size: 12px; opacity: 0.75;">世界书: ${display}</div>`;
+  };
+
   let html = `
     <div style="margin-bottom: 12px; padding: 8px; background: rgba(0,0,0,0.05); border-radius: 6px;">
       <div style="font-weight: 600; margin-bottom: 4px;">当前状态</div>
@@ -2214,6 +2469,7 @@ function renderNativeEntryStatesContent(presetName) {
       const date = new Date(version.createdAt).toLocaleDateString();
       const versionEntryCount = Object.keys(version.states).length;
       const versionEnabledCount = Object.values(version.states).filter(Boolean).length;
+      const summaryHtml = formatWorldBindingsSummary(version.worldBindings);
       return `
         <div class="version-item ${isCurrent ? 'current-version' : ''}" data-version-id="${
         version.id
@@ -2221,6 +2477,7 @@ function renderNativeEntryStatesContent(presetName) {
           <div style="flex: 1;">
             <div class="version-name">${escapeHtml(version.name)}</div>
             <div class="version-date" style="opacity:.8; font-size:12px;">${date} · ${versionEnabledCount}/${versionEntryCount} 开启</div>
+            ${summaryHtml}
           </div>
           <div class="version-actions" style="display:flex; gap:6px;">
             <button class="menu_button apply-version-btn" style="font-size: 10px; padding: 1px 4px;" title="应用此状态">应用</button>
@@ -2229,7 +2486,6 @@ function renderNativeEntryStatesContent(presetName) {
           </div>
         </div>`;
     };
-
     if (entryStatesGroupByPrefix) {
       const getGroupName = name => {
         const m = (name || '').match(/^(【[^】]+】|[^-\[\]_.:：]+[-\[\]_.:：])/);
@@ -2417,11 +2673,11 @@ function bindNativeEntryStatesMainPanelEvents() {
   $('#entry-states-switch')
     .off('click')
     .on('click', function () {
-      entryStatesEnabled = !entryStatesEnabled;
-      localStorage.setItem('preset-transfer-entry-states-enabled', entryStatesEnabled);
-      $(this).text(entryStatesEnabled ? '●' : '○');
+      entryStatesSaveWorldBindings = !entryStatesSaveWorldBindings;
+      localStorage.setItem('preset-transfer-entry-states-save-world-bindings', entryStatesSaveWorldBindings);
+      $(this).text(entryStatesSaveWorldBindings ? '●' : '○');
       if (window.toastr) {
-        toastr.info(entryStatesEnabled ? '条目状态管理已开启' : '条目状态管理已关闭');
+        toastr.info(entryStatesSaveWorldBindings ? '已开启世界书绑定功能，将在保存与应用时同步' : '已关闭世界书绑定功能，将忽略世界书同步');
       }
     });
 }
@@ -2438,7 +2694,7 @@ function updateNativeEntryStatesPanel(presetName) {
     panel.find('#st-entry-states-status').text(`预设: ${presetName}（已保存 ${count} 个状态版本）`);
 
     // 更新开关按钮状态
-    panel.find('#entry-states-switch').text(entryStatesEnabled ? '●' : '○');
+    panel.find('#entry-states-switch').text(entryStatesSaveWorldBindings ? '●' : '○');
   } catch (e) {
     console.warn('更新条目状态管理面板失败:', e);
   }
@@ -3003,7 +3259,7 @@ function createTransferUI() {
                         <span id="font-size-display">16px</span>
                     </div>
                     <div class="version-info">
-                        <span class="author">V2.0 by discord千秋梦</span>
+                        <span class="author">V2.1 by discord千秋梦</span>
                     </div>
                 </div>
                 <div class="preset-selection">
@@ -8409,3 +8665,4 @@ try {
   console.error('初始化失败:', error);
   setTimeout(initPresetTransferIntegration, 3000);
 }
+
